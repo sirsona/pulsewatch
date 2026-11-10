@@ -25,6 +25,7 @@ All notable changes to this project are documented here. The format is based on
 - pytest suite covering configuration, collectors, logging, API, and CLI,
   enforced at 85% branch coverage.
 - Ruff and mypy quality gates plus GitHub Actions CI.
+- Container image build and health-check smoke test in CI.
 - Hatchling packaging with a `pulsewatch` console entrypoint.
 - Multi-stage, non-root Docker image and Compose deployment.
 - Hardened systemd unit and deployment documentation.

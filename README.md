@@ -120,8 +120,8 @@ make lint         # Ruff
 make typecheck    # mypy
 ```
 
-The suite enforces **85% branch coverage** and runs on Python 3.12 and 3.13 in
-CI.
+The suite enforces **85% branch coverage**. CI runs the tests on Python 3.12 and
+3.13, then builds the production container and smoke-tests its readiness probe.
 
 ## API
 
