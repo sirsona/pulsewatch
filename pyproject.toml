@@ -1,0 +1,119 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pulsewatch"
+version = "0.1.0"
+description = "A Linux-first system monitoring service with a versioned REST API."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "sirsona" }]
+keywords = ["monitoring", "observability", "fastapi", "psutil", "linux"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Framework :: FastAPI",
+  "Intended Audience :: System Administrators",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: System :: Monitoring",
+]
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "psutil>=6.1,<8.0",
+  "pydantic-settings>=2.7,<3.0",
+  "uvicorn[standard]>=0.34,<1.0",
+]
+
+[project.scripts]
+pulsewatch = "pulsewatch.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/sirsona/pulsewatch"
+Repository = "https://github.com/sirsona/pulsewatch"
+Issues = "https://github.com/sirsona/pulsewatch/issues"
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28,<1.0",
+  "mypy>=1.14,<2.0",
+  "pytest>=8.3,<10.0",
+  "pytest-asyncio>=0.25,<2.0",
+  "pytest-cov>=6.0,<8.0",
+  "ruff>=0.9,<1.0",
+  "types-psutil>=6.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pulsewatch"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/README.md",
+  "/LICENSE",
+  "/pyproject.toml",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = [".venv", ".uv-cache", ".uv-python", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+  # FastAPI's dependency-injection pattern intentionally uses calls in defaults.
+  "B008",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pulsewatch"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+addopts = [
+  "-ra",
+  "--strict-config",
+  "--strict-markers",
+  "--cov=pulsewatch",
+  "--cov-branch",
+  "--cov-report=term-missing:skip-covered",
+  "--cov-fail-under=85",
+]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+branch = true
+source = ["pulsewatch"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["uvicorn.*"]
+ignore_missing_imports = true

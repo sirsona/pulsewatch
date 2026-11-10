@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible defect in PulseWatch.
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not use this form for security vulnerabilities. Follow the
+        [security policy](https://github.com/sirsona/pulsewatch/blob/main/SECURITY.md) instead.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Include commands, request paths, and relevant non-secret configuration.
+      placeholder: |
+        1. Start with ...
+        2. Request ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0 or a commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Local (uv)
+        - systemd
+        - Docker / Compose
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Host platform
+      placeholder: Ubuntu 24.04, kernel 6.8, Python 3.12
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Redact hostnames, IPs, and anything else sensitive.
+      render: json
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Preconditions
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

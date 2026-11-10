@@ -1,0 +1,47 @@
+[Unit]
+Description=PulseWatch system monitoring API
+Documentation=https://github.com/sirsona/pulsewatch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pulsewatch
+Group=pulsewatch
+WorkingDirectory=/opt/pulsewatch
+EnvironmentFile=/etc/pulsewatch/pulsewatch.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/pulsewatch/.venv/bin/pulsewatch
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+KillSignal=SIGINT
+UMask=0027
+
+# --- Hardening -------------------------------------------------------------
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
