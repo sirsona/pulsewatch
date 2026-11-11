@@ -6,14 +6,28 @@ reviewable changes.
 
 ## Development setup
 
-Requirements: Linux, Python 3.12+, and [uv](https://docs.astral.sh/uv/).
+Requirements: Linux, Python 3.12+, [uv](https://docs.astral.sh/uv/), and
+PostgreSQL 15+.
 
 ```bash
 git clone https://github.com/sirsona/pulsewatch.git
 cd pulsewatch
 uv sync
 cp .env.example .env
+
+# Update PULSEWATCH_DATABASE_URL if needed, then create the schema.
+uv run alembic upgrade head
 uv run pulsewatch --reload
+```
+
+For an integration-test database:
+
+```bash
+createdb pulsewatch_test
+export PULSEWATCH_DATABASE_URL=postgresql+asyncpg://pulsewatch:pulsewatch@127.0.0.1:5432/pulsewatch_test
+export PULSEWATCH_TEST_DATABASE_URL=$PULSEWATCH_DATABASE_URL
+uv run alembic upgrade head
+uv run pytest -m integration
 ```
 
 Run the full quality gate before opening a pull request:
@@ -34,21 +48,27 @@ That runs:
 ### Code
 
 - Keep HTTP contracts in Pydantic models under `src/pulsewatch/api/schemas.py`.
-- Keep blocking system calls out of the event loop. Synchronous route handlers
-  are fine; FastAPI runs them in a threadpool.
+- Keep blocking system calls out of the event loop. Use `asyncio.to_thread` for
+  blocking work such as psutil collection.
+- Keep psutil collection in the sampler; API routes should read persisted state.
 - Raise typed exceptions for expected failures and let unexpected exceptions
   reach the middleware boundary.
-- Do not log secrets, request bodies, or arbitrary query strings.
+- Do not log secrets, database URLs, request bodies, or arbitrary query strings.
 - Add a module docstring and type annotations to new modules.
+- Schema changes require a new Alembic migration; never edit an applied one.
 
 ### Tests
 
 - Every behaviour change needs a test that would fail without it.
-- Prefer dependency injection (`create_app(settings=..., collector=...)`) over
-  patching module globals.
+- Prefer dependency injection
+  (`create_app(settings=..., collector=..., repository=...)`) over patching module
+  globals.
 - Use `tmp_path` for filesystem-dependent settings.
 - Keep tests deterministic; mock psutil at its call boundary for collector
   tests.
+- Repository tests use SQLite for speed; PostgreSQL integration tests are marked
+  with `@pytest.mark.integration` and run when `PULSEWATCH_TEST_DATABASE_URL` is
+  set.
 - Do not lower the coverage threshold to make a change pass.
 
 ### Commits and pull requests
@@ -68,6 +88,7 @@ That runs:
 - [ ] Ruff formatting and linting pass.
 - [ ] mypy passes for `src` and `tests`.
 - [ ] Public API or configuration changes are documented.
+- [ ] Database changes include a migration and integration coverage.
 - [ ] Deployment-sensitive changes are reflected in `docs/deployment.md`.
 - [ ] CI is green.
 

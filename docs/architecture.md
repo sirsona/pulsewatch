@@ -2,28 +2,32 @@
 
 ## Goals
 
-PulseWatch is a small, reliable service that demonstrates production-oriented
-Python without hiding operational complexity. Its design priorities are:
+PulseWatch is a small, reliable Linux monitoring service built to demonstrate
+production-oriented Python without obscuring operational detail. Its priorities
+are:
 
-1. **Correct host telemetry** with psutil as the only privileged read path.
-2. **A stable HTTP contract** that is easy to consume and operate.
-3. **Observable failure** through structured logs and correlation IDs.
-4. **Testability** by keeping process wiring at the application boundary.
-5. **Clear deployment paths** for systemd and containers.
+1. **Deterministic host telemetry** with psutil as the only sampling source.
+2. **Durable samples** in PostgreSQL with a reproducible schema.
+3. **A stable HTTP contract** that is easy to consume and operate.
+4. **Observable failure** through structured logs, correlation IDs, and
+   dependency-aware readiness.
+5. **Testability** through explicit application composition and test doubles.
 
 ## Current components
 
 ```mermaid
 flowchart TD
     subgraph client["Clients and operators"]
-        operator[curl / dashboard / probe]
+        operator[curl / probe / dashboard]
     end
 
-    subgraph app["PulseWatch application"]
+    subgraph app["PulseWatch process"]
         mw[RequestContextMiddleware]
         routes[FastAPI routes]
         schemas[Pydantic contracts]
+        sampler[SamplerService]
         collector[SystemMetricsCollector]
+        repo[SqlAlchemyMetricRepository]
         config[Settings]
         logging[JSON logging]
         errors[Problem-details handlers]
@@ -32,67 +36,131 @@ flowchart TD
     operator -->|HTTP| mw
     mw --> routes
     routes --> schemas
-    routes --> collector
-    collector --> virtual[/proc, /sys/]
+    routes --> repo
     routes --> errors
-    mw --> logging
+    sampler --> collector
+    sampler --> repo
+    collector --> proc[/proc, /sys/]
+    repo --> postgres[(PostgreSQL)]
     config --> app
+    mw --> logging
 ```
 
 | Module | Responsibility |
 | --- | --- |
 | `pulsewatch.main` | Composition root, lifespan, route registration |
-| `pulsewatch.core.config` | Environment and `.env` parsing, validation |
+| `pulsewatch.core.config` | Environment/.env parsing and validation |
 | `pulsewatch.core.logging` | JSON/console formatting, request context |
 | `pulsewatch.core.middleware` | Request IDs, access logs, last-resort error boundary |
 | `pulsewatch.core.errors` | RFC 9457 responses and framework exception handlers |
 | `pulsewatch.api` | Route definitions and response schemas |
 | `pulsewatch.collectors` | Collector protocol and psutil implementation |
+| `pulsewatch.db` | Async engine, SQLAlchemy model, repository |
+| `pulsewatch.services.sampler` | Fixed-cadence collection loop |
+| `migrations` | Alembic environment and schema versions |
+
+## Startup and shutdown
+
+The FastAPI lifespan owns long-lived resources:
+
+1. `create_app()` constructs the database engine, repository, collector, and
+   sampler. Creating an engine does not open a database connection.
+2. On startup, the sampler task is created. It attempts its first collection
+   immediately.
+3. On shutdown, the sampler stop event is set and the task is awaited.
+4. The database engine is disposed.
+
+If PostgreSQL is unavailable at startup, the API still starts; sampling fails,
+`/health/ready` reports degraded, and the sampler retries on the next interval.
+In Compose, the app waits for PostgreSQL and runs Alembic before startup, so this
+scenario is primarily relevant to dependency loss after startup.
+
+## Sampling lifecycle
+
+The sampler is the **only** caller of psutil:
+
+```text
+collector.collect() (worker thread)
+        ↓
+repository.save_snapshot() (async PostgreSQL write)
+        ↓
+last_success_at updated
+        ↓
+wait for interval or shutdown
+```
+
+Details:
+
+- psutil is blocking, so collection runs through `asyncio.to_thread`.
+- The loop subtracts collection/write time from the interval to avoid drift.
+- Write failures are logged with a traceback and do not terminate the task.
+  Readiness turns stale after the configured freshness window.
+- The first sample uses a very short CPU measurement window; subsequent samples
+  use the configured interval.
+- The sampler is a single in-process task. Running multiple API workers would
+  create one sampler per worker and duplicate writes; this is why the current
+  deployment model is one application process.
 
 ## Request lifecycle
 
-1. Uvicorn accepts the HTTP connection and invokes the ASGI application.
-2. `RequestContextMiddleware` resolves or generates a request ID, stores it in a
-   `ContextVar`, and records a start timestamp.
-3. FastAPI routes the request. Health and metrics endpoints are synchronous
-   functions, so FastAPI runs them in its worker threadpool.
-4. The collector reads `/proc`, `/sys`, and OS interfaces through psutil and
-   returns a validated `SystemSnapshot`.
-5. FastAPI serialises the Pydantic model as JSON.
-6. The middleware adds the request ID header and emits a structured access log
-   with method, path, status, duration, and client address.
-7. If an exception escapes the route, the middleware logs the traceback and
-   returns a generic `500` problem-details response. The correlation ID is
-   preserved.
+1. Uvicorn accepts the HTTP connection.
+2. `RequestContextMiddleware` resolves or generates a request ID and starts a
+   timer.
+3. FastAPI routes the request.
+4. Metrics routes read the latest stored sample from the repository. Health
+   routes query the repository or sampler state. No route calls psutil.
+5. Pydantic serialises the response.
+6. The middleware adds the request ID header and writes an access log.
+7. Unexpected exceptions become a generic `500` problem response; known
+   framework and validation errors use dedicated handlers.
 
-Framework errors (`404`, `405`) and validation failures are converted by
-exception handlers before they return to the middleware.
+## Persistence
 
-## Concurrency model
+The `metric_samples` table stores one row per snapshot:
 
-The service uses a single Uvicorn worker by default. That is intentional for the
-current feature set: psutil calls are short, CPU-bound only at the boundary, and
-the API is read-only.
+- Identity primary key
+- UTC `collected_at`
+- Hostname
+- Scalar CPU, memory, and disk percentages for future filtering and aggregation
+- Full snapshot payload as `JSONB`
 
-- psutil calls are synchronous and executed in FastAPI's threadpool.
-- The collector is stateless except for psutil's CPU sampling baselines.
-- A process-wide `Settings` instance is cached after first load.
-- No mutable request state is shared between requests; the request ID lives in a
-  context variable.
+Indexes:
 
-Multiple Uvicorn workers are not recommended yet: each worker would keep its own
-CPU baselines, and the future sampler must be designed for exactly-once
-collection before scaling out.
+- `collected_at`
+- `(hostname, collected_at)`
+
+The model is in `pulsewatch.db.models`; the repository hides SQLAlchemy from the
+API. PostgreSQL is the production target, while SQLite covers fast repository
+tests. Production JSON is stored as `JSONB`; the model uses a JSON variant so the
+same repository logic can run against SQLite in tests.
+
+Alembic owns the schema. The application does not call `create_all()` at
+startup. Compose runs `alembic upgrade head` before starting the app; the systemd
+unit uses `ExecStartPre`.
+
+## Readiness semantics
+
+Readiness validates:
+
+- Database connectivity through `SELECT 1`.
+- Sampler freshness: a successful write within the stale threshold.
+
+It deliberately does not call psutil. Readiness may be `503` briefly after
+startup before the first sample is stored. Liveness remains a process-only check
+so a database outage does not trigger pointless restarts.
+
+Readiness returns the health schema with per-dependency checks and status `503`
+when degraded. Other API failures use problem details.
 
 ## Logging
 
-Logs are JSON by default, one object per line on stdout/stderr:
+Logs are JSON by default, one object per line on stderr:
 
 ```json
 {
-  "timestamp": "2026-11-10T17:02:43.521912+00:00",
+  "timestamp": "2026-11-11T16:48:27.697043+00:00",
   "level": "info",
-  "logger": "pulsewatch.core.middleware",
+  "logger": "pulsewatch",
   "message": "request completed",
   "request_id": "trace-42",
   "http_method": "GET",
@@ -103,74 +171,42 @@ Logs are JSON by default, one object per line on stdout/stderr:
 }
 ```
 
-Uvicorn's server and error loggers are redirected through the root handler so
-startup, shutdown, and server errors share the same format. Uvicorn's access
-logger is deliberately suppressed: the middleware emits richer access entries
-with the request ID and duration. Errors include the formatted traceback in the
-`exception` field. Local development can opt into compact console output with
+Uvicorn's server and error loggers are redirected through the root handler.
+Uvicorn's access logger is suppressed because the middleware emits richer access
+entries. Errors include formatted tracebacks in the `exception` field. Local
+development can opt into console output with
 `PULSEWATCH_LOG_FORMAT=console`.
+
+Database URLs are held as `SecretStr` and are not included in application
+configuration representations.
 
 ## Error handling
 
-There are three layers:
+Three layers:
 
-1. **Validation and framework exceptions** are converted by registered handlers.
-2. **Unexpected exceptions** are caught by the request middleware, logged with a
-   traceback, and replaced with a generic problem response.
-3. **ASGI-level failures before the middleware** fall back to Starlette's server
-   error handling; Uvicorn still logs them.
+1. Framework HTTP exceptions and request-validation errors are converted by
+   registered handlers.
+2. The metrics endpoint maps repository failures and an empty store to `503`
+   problem details.
+3. Unexpected exceptions are caught by the request middleware, logged with a
+   traceback, and replaced with a generic response.
 
-The response contract is documented in [api.md](api.md#errors). Internal
-exception text is never returned to the caller.
+## Testing strategy
 
-## Planned persistence
+- Route tests use a fake repository and collector; they do not require a
+  database.
+- Sampler tests use a fake collector/repository and a real asyncio loop.
+- Repository tests run against SQLite for fast coverage of query and JSON
+  round-tripping.
+- PostgreSQL integration tests run against a migrated database when
+  `PULSEWATCH_TEST_DATABASE_URL` is set; CI provides a PostgreSQL service.
+- The container CI job builds the image and starts the real Compose stack,
+  checking migration, readiness, and a stored sample.
 
-The next milestone adds PostgreSQL without changing the current API contract.
+## Next design steps
 
-```mermaid
-flowchart LR
-    sampler[Async sampler task] --> collector[psutil collector]
-    sampler --> repository[Async repository]
-    repository --> postgres[(PostgreSQL)]
-    history[History endpoints] --> repository
-    ready[Readiness probe] -.-> postgres
-```
-
-Proposed design:
-
-- **SQLAlchemy 2.x async engine** with `asyncpg`, managed by Alembic.
-- A `metric_samples` table keyed by `(id, collected_at)`, indexed on
-  `(hostname, collected_at DESC)`.
-- Scalar columns for frequently queried values (`cpu_percent`,
-  `memory_percent`, `disk_percent`) plus a JSONB payload for the full snapshot.
-- A single background sampling task started in the FastAPI lifespan. It uses the
-  same collector interface as the live endpoint.
-- Bounded queue/backpressure: if the database is slow, samples are dropped and a
-  warning is logged rather than blocking API traffic.
-- Retention enforced by a periodic `DELETE` job or partitioning, configurable via
-  environment settings.
-- Readiness requires the database only when history is enabled.
-- A separate `/api/v1/metrics/history` endpoint with time-range and pagination
-  parameters.
-
-The persistence layer will sit behind a repository protocol so route and service
-tests can continue to run without a database. A PostgreSQL service will be
-added to Compose and the CI integration job.
-
-## Deployment topology
-
-- **systemd:** the host-native deployment. Full host visibility, no container
-  namespace boundaries. The unit is sandboxed and reads configuration from
-  `/etc/pulsewatch/pulsewatch.env`.
-- **Docker:** reproducible image, unprivileged by default, suitable for demos and
-  non-host-specific deployments. A container has its own mount and network
-  namespaces, so disk and network values describe the container rather than the
-  full host. See [deployment.md](deployment.md#container-visibility).
-
-## Future concerns
-
-- Authentication/rate limiting at the edge; the API is currently loopback-only.
-- Multi-host identity in stored samples.
-- Sampling and retention backpressure metrics.
-- Load testing to establish capacity and the worker model.
-- OpenTelemetry traces if the service grows beyond a single process.
+- History API with bounded time ranges and pagination.
+- Retention job with batched deletes.
+- Multi-process safety or a dedicated sampler process if scaling beyond one
+  application worker.
+- Authentication at the edge if the API is exposed beyond loopback.

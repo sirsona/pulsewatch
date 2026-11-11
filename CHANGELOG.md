@@ -6,11 +6,29 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- PostgreSQL-backed metric sample storage using async SQLAlchemy and asyncpg.
+- Alembic migration for the `metric_samples` table and its query indexes.
+- Background sampler that collects on a configurable interval and persists each
+  snapshot.
+- PostgreSQL and sampler-freshness checks on `/health/ready`.
+- PostgreSQL integration tests and a full Compose-stack CI smoke test.
+
+### Changed
+
+- `/api/v1/metrics/current` now returns the latest persisted sample instead of
+  collecting metrics on request.
+- Readiness no longer calls psutil and returns `503` with dependency checks when
+  degraded.
+- Compose now starts PostgreSQL and applies migrations before the API.
+- The systemd unit applies migrations before starting the service.
+
 ### Planned
 
-- PostgreSQL persistence and metric history endpoints.
-- Background sampler, retention policy, and Alembic migrations.
-- Integration tests against PostgreSQL.
+- Historical metric query endpoint with time-range filtering.
+- Retention policy and cleanup job.
+- Production backup/restore automation and load testing.
 
 ## [0.1.0] - 2026-11-10
 

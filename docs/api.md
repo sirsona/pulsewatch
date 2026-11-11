@@ -1,20 +1,21 @@
 # API contract
 
-PulseWatch exposes an HTTP+JSON API. The interactive OpenAPI documentation is
-served at `/docs` and the raw schema at `/openapi.json` when
-`PULSEWATCH_DOCS_ENABLED=true`.
+PulseWatch exposes an HTTP+JSON API backed by a PostgreSQL metrics store. The
+interactive OpenAPI documentation is served at `/docs` and the raw schema at
+`/openapi.json` when `PULSEWATCH_DOCS_ENABLED=true`.
 
 - **Default bind:** `127.0.0.1:8000`
 - **Application prefix:** `/api/v1`
 - **Operational probes:** unversioned, under `/health/`
 - **Error media type:** `application/problem+json`
+- **Readiness media type:** `application/json`
 
 ## Versioning
 
-Application endpoints live under `/api/v1`. Breaking changes require a new
-path version. Operational probes intentionally sit outside the versioned API so
-that orchestrators do not need to change their configuration when the API
-version advances.
+Application endpoints live under `/api/v1`. Breaking changes require a new path
+version. Operational probes intentionally sit outside the versioned API so
+orchestrators do not need to change their configuration when the API version
+advances.
 
 ## Request correlation
 
@@ -51,7 +52,7 @@ Returns service metadata for discovery and smoke tests.
 ### `GET /health/live`
 
 Returns `200 OK` whenever the process is alive and able to serve HTTP. It does
-not inspect dependencies or collect metrics.
+not inspect PostgreSQL, the sampler, or host metrics.
 
 ```json
 {
@@ -61,15 +62,20 @@ not inspect dependencies or collect metrics.
 }
 ```
 
-Use this for container and systemd liveness checks. Do not use it as a signal
-that the service can handle real traffic.
+Use this for container and systemd liveness checks. It is intentionally cheap
+and should not cause a restart just because a dependency is unavailable.
 
 ### `GET /health/ready`
 
-Returns `200 OK` when the collector can produce a snapshot. This endpoint
-currently invokes the collector, so it is slightly more expensive than the
-liveness probe. When PostgreSQL-backed history is added, it will also check the
-database before reporting ready.
+Checks two things:
+
+1. PostgreSQL accepts a trivial query.
+2. The sampler has successfully written a sample within
+   `PULSEWATCH_SAMPLER_STALE_AFTER_SECONDS`.
+
+It does **not** call psutil.
+
+Ready response — HTTP `200`:
 
 ```json
 {
@@ -77,19 +83,48 @@ database before reporting ready.
   "service": "pulsewatch",
   "version": "0.1.0",
   "checks": {
-    "api": "ok",
-    "collector": "ok"
+    "database": "ok",
+    "sampler": "ok"
   }
 }
 ```
 
+Degraded responses — HTTP `503`:
+
+```json
+{
+  "status": "degraded",
+  "service": "pulsewatch",
+  "version": "0.1.0",
+  "checks": {
+    "database": "unavailable",
+    "sampler": "stale"
+  }
+}
+```
+
+If sampling is disabled, the sampler check is reported as `disabled` and is not
+required for readiness. Disabling sampling is intended for tests and maintenance,
+not normal operation.
+
+Readiness may return `503` during the first moments after startup until the first
+sample has been persisted. Startup ordering and health-check retries should
+account for this.
+
 ### `GET /api/v1/metrics/current`
 
-Returns a point-in-time snapshot of host telemetry.
+Returns the most recent snapshot successfully written by the sampler.
 
 ```
 Content-Type: application/json
 ```
+
+It returns `503` when:
+
+- no sample has been stored yet, or
+- the metrics repository cannot be reached.
+
+The repository is the source of truth; this endpoint does not invoke psutil.
 
 Fields:
 
@@ -100,7 +135,7 @@ Fields:
 | root | `platform` | Platform description |
 | root | `boot_time` | Boot time, UTC ISO 8601 |
 | root | `uptime_seconds` | Seconds since boot |
-| `cpu` | `usage_percent` | CPU utilisation since the previous poll |
+| `cpu` | `usage_percent` | CPU utilisation over the sampler interval |
 | `cpu` | `logical_cores` / `physical_cores` | Core counts |
 | `cpu` | `per_core_percent` | Per-logical-core utilisation |
 | `cpu` | `load_average_*` | Unix load averages, or `null` if unavailable |
@@ -112,31 +147,32 @@ Fields:
 | `network` | `bytes_*`, `packets_*` | Host-wide cumulative counters |
 | `network` | `errors_*`, `drops_*` | Cumulative error and drop counters |
 
-`cpu.usage_percent` is calculated between consecutive collector calls. With the
-current request-driven design, that interval is the time between API requests;
-the planned background sampler will make the interval deterministic.
+CPU usage is measured between successive sampler runs, not between API requests.
+The first sample immediately after process startup may report a near-zero CPU
+value because the sampling window is very short. Subsequent samples use the
+configured interval.
 
 Cumulative disk and network counters are since boot, not since the previous
-request. Subtract two samples to calculate a rate.
+sample. Subtract two samples to calculate a rate.
 
 ### `GET /docs` and `GET /openapi.json`
 
 Interactive documentation and the machine-readable OpenAPI schema. Both return
-`404` when docs are disabled (recommended in production).
+`404` when docs are disabled, which is recommended for production.
 
 ## Errors
 
-All HTTP errors use [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem
-details:
+Application errors use [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)
+problem details:
 
 ```json
 {
   "type": "about:blank",
-  "title": "Not Found",
-  "status": 404,
-  "detail": "Not Found",
-  "instance": "/missing",
-  "code": "http_404",
+  "title": "Service Unavailable",
+  "status": 503,
+  "detail": "The metrics store is unavailable.",
+  "instance": "/api/v1/metrics/current",
+  "code": "http_503",
   "request_id": "2f6080eaff4d4f0fbf6a5fce09d6432c"
 }
 ```
@@ -159,16 +195,23 @@ Error codes:
 | `http_404` | 404 | Route not found |
 | `http_405` | 405 | Method not allowed |
 | `validation_error` | 422 | Invalid request payload |
-| `internal_server_error` | 500 | Unhandled server or collector failure |
+| `http_503` | 503 | No sample is available or storage is unavailable |
+| `internal_server_error` | 500 | Unhandled server failure |
 
-Unhandled exceptions return a generic message; internal details and stack traces
-remain in the structured server logs and are not leaked to clients.
+Readiness is the exception to the problem-details shape: it uses the health
+schema shown above so dependency checks remain inspectable. Other 503 responses,
+including those from `/api/v1/metrics/current`, use problem details.
+
+Unexpected exceptions return a generic message; internal details and stack
+traces remain in the structured server logs and are not leaked to clients.
 
 ## Current limitations
 
+- No historical query endpoint yet. Only the latest stored sample is available
+  over HTTP.
+- No retention job yet; samples accumulate until an operator cleans them up.
 - No authentication or rate limiting. Keep the service bound to loopback and put
   an authenticated reverse proxy in front before exposing it.
-- No historical queries yet. Each request returns a live snapshot.
 - No CORS policy; browser clients should use a same-origin proxy.
 - Linux is the primary target. Some counters may be unavailable on other
   platforms and will be reported as `null` or zero.
