@@ -92,6 +92,54 @@ class FailingCollector(MetricsCollector):
         raise RuntimeError(msg)
 
 
+class FakeRepository:
+    """In-memory repository double for route and sampler tests."""
+
+    def __init__(
+        self,
+        snapshot: SystemSnapshot | None = None,
+        *,
+        healthy: bool = True,
+    ) -> None:
+        self.snapshot: SystemSnapshot | None = (
+            snapshot if snapshot is not None else build_snapshot()
+        )
+        self.healthy = healthy
+        self.saved: list[SystemSnapshot] = []
+        self.latest_calls = 0
+        self.connection_checks = 0
+
+    async def save_snapshot(self, snapshot: SystemSnapshot) -> None:
+        if not self.healthy:
+            msg = "simulated repository failure"
+            raise RuntimeError(msg)
+        self.saved.append(snapshot)
+        self.snapshot = snapshot
+
+    async def latest_snapshot(self) -> SystemSnapshot | None:
+        self.latest_calls += 1
+        if not self.healthy:
+            msg = "simulated repository failure"
+            raise RuntimeError(msg)
+        return self.snapshot
+
+    async def check_connection(self) -> None:
+        self.connection_checks += 1
+        if not self.healthy:
+            msg = "simulated repository failure"
+            raise RuntimeError(msg)
+
+
+class FakeSampler:
+    """Readiness-only sampler double."""
+
+    def __init__(self, *, healthy: bool) -> None:
+        self.healthy = healthy
+
+    def is_healthy(self, *, now: datetime | None = None) -> bool:
+        return self.healthy
+
+
 @pytest.fixture(autouse=True)
 def clear_settings_cache() -> Iterator[None]:
     """Keep cached environment settings from leaking between tests."""
@@ -106,12 +154,22 @@ def settings(tmp_path: Path) -> Settings:
         environment="test",
         disk_path=tmp_path,
         log_format="console",
+        sampler_enabled=False,
     )
 
 
 @pytest.fixture
-def app(settings: Settings) -> FastAPI:
-    return create_app(settings=settings, collector=StubCollector())
+def repository() -> FakeRepository:
+    return FakeRepository()
+
+
+@pytest.fixture
+def app(settings: Settings, repository: FakeRepository) -> FastAPI:
+    return create_app(
+        settings=settings,
+        collector=StubCollector(),
+        repository=repository,
+    )
 
 
 @pytest.fixture

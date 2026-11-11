@@ -12,7 +12,12 @@ from pulsewatch import __version__
 from pulsewatch.collectors.base import MetricsCollector
 from pulsewatch.core.config import Settings
 from pulsewatch.main import create_app
-from tests.conftest import StubCollector, build_snapshot
+from tests.conftest import (
+    FakeRepository,
+    FakeSampler,
+    StubCollector,
+    build_snapshot,
+)
 
 
 def test_root_returns_service_metadata(client: TestClient) -> None:
@@ -38,15 +43,55 @@ def test_liveness_does_not_collect_metrics(app: FastAPI, client: TestClient) -> 
     assert collector.call_count == 0
 
 
-def test_readiness_collects_metrics(app: FastAPI, client: TestClient) -> None:
+def test_readiness_checks_the_database_without_collecting_psutil(
+    app: FastAPI, client: TestClient
+) -> None:
+    repository = app.state.repository
     collector = app.state.collector
+    assert isinstance(repository, FakeRepository)
     assert isinstance(collector, StubCollector)
 
     response = client.get("/health/ready")
 
     assert response.status_code == 200
-    assert response.json()["checks"] == {"api": "ok", "collector": "ok"}
-    assert collector.call_count == 1
+    assert response.json()["checks"] == {"database": "ok", "sampler": "disabled"}
+    assert repository.connection_checks == 1
+    assert collector.call_count == 0
+
+
+def test_readiness_is_degraded_when_the_database_is_unavailable(
+    app: FastAPI, client: TestClient
+) -> None:
+    app.state.repository = FakeRepository(healthy=False)
+
+    response = client.get("/health/ready", headers={"X-Request-ID": "db-down-1"})
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["status"] == "degraded"
+    assert payload["checks"] == {"database": "unavailable", "sampler": "disabled"}
+    assert response.headers["X-Request-ID"] == "db-down-1"
+
+
+def test_readiness_is_degraded_when_the_sampler_is_stale(app: FastAPI, client: TestClient) -> None:
+    app.state.settings = app.state.settings.model_copy(update={"sampler_enabled": True})
+    app.state.sampler = FakeSampler(healthy=False)
+
+    response = client.get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "degraded"
+    assert response.json()["checks"] == {"database": "ok", "sampler": "stale"}
+
+
+def test_readiness_is_ok_when_the_sampler_is_fresh(app: FastAPI, client: TestClient) -> None:
+    app.state.settings = app.state.settings.model_copy(update={"sampler_enabled": True})
+    app.state.sampler = FakeSampler(healthy=True)
+
+    response = client.get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["checks"] == {"database": "ok", "sampler": "ok"}
 
 
 def test_docs_can_be_disabled(tmp_path: Path) -> None:
@@ -55,8 +100,13 @@ def test_docs_can_be_disabled(tmp_path: Path) -> None:
         disk_path=tmp_path,
         docs_enabled=False,
         log_format="console",
+        sampler_enabled=False,
     )
-    app = create_app(settings=settings, collector=StubCollector(build_snapshot()))
+    app = create_app(
+        settings=settings,
+        collector=StubCollector(build_snapshot()),
+        repository=FakeRepository(),
+    )
 
     with TestClient(app) as client:
         assert client.get("/docs").status_code == 404
@@ -84,8 +134,13 @@ def test_custom_request_id_header(tmp_path: Path) -> None:
         disk_path=tmp_path,
         request_id_header="X-Correlation-ID",
         log_format="console",
+        sampler_enabled=False,
     )
-    app = create_app(settings=settings, collector=StubCollector())
+    app = create_app(
+        settings=settings,
+        collector=StubCollector(),
+        repository=FakeRepository(),
+    )
 
     with TestClient(app) as client:
         response = client.get("/health/live", headers={"X-Correlation-ID": "corr-42"})

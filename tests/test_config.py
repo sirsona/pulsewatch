@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from pulsewatch.core.config import Settings, get_settings
 
@@ -31,6 +31,11 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert settings.log_format == "json"
     assert settings.docs_enabled is True
     assert settings.disk_path == Path("/")
+    assert settings.database_url.get_secret_value().startswith("postgresql+asyncpg://")
+    assert settings.sampler_enabled is True
+    assert settings.sample_interval_seconds == 15.0
+    assert settings.sampler_stale_after_seconds == 45.0
+    assert "pulsewatch:pulsewatch" not in repr(settings)
 
 
 def test_environment_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -42,6 +47,13 @@ def test_environment_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     monkeypatch.setenv("PULSEWATCH_LOG_FORMAT", "console")
     monkeypatch.setenv("PULSEWATCH_DOCS_ENABLED", "false")
     monkeypatch.setenv("PULSEWATCH_DISK_PATH", str(tmp_path))
+    monkeypatch.setenv(
+        "PULSEWATCH_DATABASE_URL",
+        "postgresql+asyncpg://test-user:test-pass@db.example:5432/test-db",
+    )
+    monkeypatch.setenv("PULSEWATCH_SAMPLER_ENABLED", "false")
+    monkeypatch.setenv("PULSEWATCH_SAMPLE_INTERVAL_SECONDS", "30")
+    monkeypatch.setenv("PULSEWATCH_SAMPLER_STALE_AFTER_SECONDS", "90")
 
     settings = Settings()
 
@@ -52,6 +64,13 @@ def test_environment_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     assert settings.log_format == "console"
     assert settings.docs_enabled is False
     assert settings.disk_path == tmp_path
+    assert settings.sampler_enabled is False
+    assert settings.sample_interval_seconds == 30.0
+    assert settings.sampler_stale_after_seconds == 90.0
+    assert (
+        settings.database_url.get_secret_value()
+        == "postgresql+asyncpg://test-user:test-pass@db.example:5432/test-db"
+    )
 
 
 def test_dotenv_values_are_loaded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -122,3 +141,25 @@ def test_custom_header_is_accepted(tmp_path: Path) -> None:
     settings = Settings(request_id_header="X-Correlation-ID", disk_path=tmp_path)
 
     assert settings.request_id_header == "X-Correlation-ID"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://user:pass@localhost/db",
+        "sqlite+aiosqlite:///test.db",
+        "mysql://user:pass@localhost/db",
+    ],
+)
+def test_non_asyncpg_database_urls_are_rejected(url: str, tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="postgresql\\+asyncpg"):
+        Settings(database_url=SecretStr(url), disk_path=tmp_path)
+
+
+def test_stale_threshold_must_cover_the_sampling_interval(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="sampler_stale_after_seconds"):
+        Settings(
+            disk_path=tmp_path,
+            sample_interval_seconds=60,
+            sampler_stale_after_seconds=30,
+        )
