@@ -43,6 +43,11 @@ RUN groupadd --system --gid 10001 pulsewatch \
 WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
+COPY alembic.ini ./
+COPY migrations ./migrations
+# COPY preserves host permissions; the unprivileged runtime user must be able
+# to read the migration configuration and scripts.
+RUN chmod 0644 alembic.ini && chmod -R a+rX migrations
 
 USER 10001:10001
 

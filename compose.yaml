@@ -1,18 +1,56 @@
 name: pulsewatch
 
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: pulsewatch
+      POSTGRES_USER: pulsewatch
+      # Development-only credential. Override for any shared environment.
+      POSTGRES_PASSWORD: pulsewatch
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulsewatch -d pulsewatch"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    volumes:
+      - pulsewatch-postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
   pulsewatch:
     build:
       context: .
       dockerfile: docker/Dockerfile
     image: pulsewatch:local
     init: true
+    command:
+      - sh
+      - -c
+      - alembic upgrade head && exec pulsewatch
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8000:8000"
     environment:
       PULSEWATCH_ENVIRONMENT: production
       PULSEWATCH_LOG_FORMAT: json
-      PULSEWATCH_DOCS_ENABLED: "false"
+      PULSEWATCH_DOCS_ENABLED: "true"
+      PULSEWATCH_DATABASE_URL: postgresql+asyncpg://pulsewatch:pulsewatch@postgres:5432/pulsewatch
+      PULSEWATCH_SAMPLER_ENABLED: "true"
+      PULSEWATCH_SAMPLE_INTERVAL_SECONDS: "15"
+      PULSEWATCH_SAMPLER_STALE_AFTER_SECONDS: "45"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).read()"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -24,3 +62,6 @@ services:
     mem_limit: 256m
     restart: unless-stopped
     stop_grace_period: 15s
+
+volumes:
+  pulsewatch-postgres:
