@@ -2,6 +2,10 @@
 .gitignore
 .github
 .venv
+.venv*
+.uv-cache
+.uv-python
+.docker
 venv
 __pycache__
 *.py[cod]
@@ -9,6 +13,7 @@ __pycache__
 .mypy_cache
 .ruff_cache
 .coverage
+.coverage.*
 coverage.xml
 htmlcov
 dist
