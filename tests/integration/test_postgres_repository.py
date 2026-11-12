@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import delete
@@ -45,3 +46,36 @@ async def test_postgresql_repository_round_trip(database: Database) -> None:
 
     assert loaded == snapshot
     await repository.check_connection()
+
+
+async def test_postgresql_history_and_retention(database: Database) -> None:
+    """History pagination and retention work against the migrated table."""
+    repository = SqlAlchemyMetricRepository(database)
+    base = build_snapshot()
+    older = base.model_copy(update={"timestamp": base.timestamp - timedelta(seconds=20)})
+    newer = base
+    for snapshot in (older, newer):
+        await repository.save_snapshot(snapshot)
+
+    page = await repository.list_snapshots(
+        start=older.timestamp,
+        end=newer.timestamp,
+        limit=1,
+    )
+    assert len(page) == 1
+    assert page[0].snapshot == newer
+
+    next_page = await repository.list_snapshots(
+        start=older.timestamp,
+        end=newer.timestamp,
+        limit=1,
+        before=(page[0].snapshot.timestamp, page[0].id),
+    )
+    assert len(next_page) == 1
+    assert next_page[0].snapshot == older
+
+    cutoff = newer.timestamp + timedelta(seconds=1)
+    first_delete = await repository.delete_samples_before(cutoff, batch_size=1)
+    second_delete = await repository.delete_samples_before(cutoff, batch_size=1)
+    assert (first_delete, second_delete) == (1, 1)
+    assert await repository.latest_snapshot() is None

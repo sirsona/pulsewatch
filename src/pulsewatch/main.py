@@ -18,6 +18,7 @@ from pulsewatch.core.logging import configure_logging, logger
 from pulsewatch.core.middleware import RequestContextMiddleware
 from pulsewatch.db.database import Database
 from pulsewatch.db.repository import MetricRepository, SqlAlchemyMetricRepository
+from pulsewatch.services.retention import RetentionService
 from pulsewatch.services.sampler import SamplerService
 
 API_PREFIX = "/api/v1"
@@ -34,6 +35,7 @@ def create_app(
     collector: MetricsCollector | None = None,
     repository: MetricRepository | None = None,
     sampler: SamplerService | None = None,
+    retention: RetentionService | None = None,
 ) -> FastAPI:
     """Build an application instance.
 
@@ -55,11 +57,19 @@ def create_app(
         interval_seconds=resolved_settings.sample_interval_seconds,
         stale_after_seconds=resolved_settings.sampler_stale_after_seconds,
     )
+    retention_service = retention or RetentionService(
+        repository,
+        retention_days=resolved_settings.retention_days,
+        interval_seconds=resolved_settings.retention_cleanup_interval_seconds,
+        batch_size=resolved_settings.retention_batch_size,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if resolved_settings.sampler_enabled:
             sampler_service.start()
+        if resolved_settings.retention_enabled:
+            retention_service.start()
         logger.info(
             "PulseWatch service started",
             extra={"event": "startup"},
@@ -67,6 +77,8 @@ def create_app(
         try:
             yield
         finally:
+            if resolved_settings.retention_enabled:
+                await retention_service.stop()
             if resolved_settings.sampler_enabled:
                 await sampler_service.stop()
             if database is not None:
@@ -84,8 +96,9 @@ def create_app(
         summary="Linux-first host metrics over a versioned REST API.",
         description=(
             "PulseWatch samples CPU, memory, disk, and network telemetry for the "
-            "host it runs on, stores samples in PostgreSQL, and serves the latest "
-            "snapshot. All errors are returned as RFC 9457 problem details."
+            "host it runs on, stores timestamped samples in PostgreSQL, and serves "
+            "the latest snapshot and bounded history queries. Expired samples are "
+            "removed by a retention task. All errors use RFC 9457 problem details."
         ),
         version=__version__,
         docs_url=docs_url,
@@ -99,6 +112,7 @@ def create_app(
     app.state.collector = metrics_collector
     app.state.repository = repository
     app.state.sampler = sampler_service
+    app.state.retention = retention_service
 
     app.add_middleware(
         RequestContextMiddleware,

@@ -101,6 +101,7 @@ def test_docs_can_be_disabled(tmp_path: Path) -> None:
         docs_enabled=False,
         log_format="console",
         sampler_enabled=False,
+        retention_enabled=False,
     )
     app = create_app(
         settings=settings,
@@ -135,6 +136,7 @@ def test_custom_request_id_header(tmp_path: Path) -> None:
         request_id_header="X-Correlation-ID",
         log_format="console",
         sampler_enabled=False,
+        retention_enabled=False,
     )
     app = create_app(
         settings=settings,

@@ -19,6 +19,7 @@ from pulsewatch.api.schemas import (
 )
 from pulsewatch.collectors.base import MetricsCollector
 from pulsewatch.core.config import Settings, get_settings
+from pulsewatch.db.repository import StoredSample
 from pulsewatch.main import create_app
 
 
@@ -72,6 +73,19 @@ def build_snapshot() -> SystemSnapshot:
     )
 
 
+def stored_sample(
+    sample_id: int,
+    when: datetime,
+    *,
+    hostname: str = "test-host",
+) -> StoredSample:
+    """Build a deterministic persisted sample for history and retention tests."""
+    return StoredSample(
+        id=sample_id,
+        snapshot=build_snapshot().model_copy(update={"timestamp": when, "hostname": hostname}),
+    )
+
+
 class StubCollector(MetricsCollector):
     """Deterministic collector double with call accounting."""
 
@@ -106,28 +120,65 @@ class FakeRepository:
         )
         self.healthy = healthy
         self.saved: list[SystemSnapshot] = []
+        self.records: list[StoredSample] = []
         self.latest_calls = 0
+        self.history_calls = 0
+        self.delete_calls = 0
         self.connection_checks = 0
+        self._next_id = 1
 
-    async def save_snapshot(self, snapshot: SystemSnapshot) -> None:
+    def _check_healthy(self) -> None:
         if not self.healthy:
             msg = "simulated repository failure"
             raise RuntimeError(msg)
+
+    async def save_snapshot(self, snapshot: SystemSnapshot) -> None:
+        self._check_healthy()
         self.saved.append(snapshot)
         self.snapshot = snapshot
+        self.records.append(StoredSample(id=self._next_id, snapshot=snapshot))
+        self._next_id += 1
 
     async def latest_snapshot(self) -> SystemSnapshot | None:
         self.latest_calls += 1
-        if not self.healthy:
-            msg = "simulated repository failure"
-            raise RuntimeError(msg)
+        self._check_healthy()
         return self.snapshot
+
+    async def list_snapshots(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        limit: int,
+        before: tuple[datetime, int] | None = None,
+    ) -> list[StoredSample]:
+        self.history_calls += 1
+        self._check_healthy()
+        records = [record for record in self.records if start <= record.snapshot.timestamp <= end]
+        if before is not None:
+            before_time, before_id = before
+            records = [
+                record
+                for record in records
+                if (record.snapshot.timestamp, record.id) < (before_time, before_id)
+            ]
+        records.sort(key=lambda record: (record.snapshot.timestamp, record.id), reverse=True)
+        return records[:limit]
+
+    async def delete_samples_before(self, cutoff: datetime, *, batch_size: int) -> int:
+        self.delete_calls += 1
+        self._check_healthy()
+        expired = sorted(
+            (record for record in self.records if record.snapshot.timestamp < cutoff),
+            key=lambda record: (record.snapshot.timestamp, record.id),
+        )[:batch_size]
+        expired_ids = {record.id for record in expired}
+        self.records = [record for record in self.records if record.id not in expired_ids]
+        return len(expired)
 
     async def check_connection(self) -> None:
         self.connection_checks += 1
-        if not self.healthy:
-            msg = "simulated repository failure"
-            raise RuntimeError(msg)
+        self._check_healthy()
 
 
 class FakeSampler:
@@ -155,6 +206,7 @@ def settings(tmp_path: Path) -> Settings:
         disk_path=tmp_path,
         log_format="console",
         sampler_enabled=False,
+        retention_enabled=False,
     )
 
 

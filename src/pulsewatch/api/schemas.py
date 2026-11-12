@@ -100,3 +100,14 @@ class SystemSnapshot(BaseModel):
     memory: MemoryMetrics
     disk: DiskMetrics
     network: NetworkMetrics
+
+
+class HistoryResponse(BaseModel):
+    """A bounded, descending page of persisted metric snapshots."""
+
+    start: datetime
+    end: datetime
+    limit: int
+    count: int
+    next_cursor: str | None
+    samples: list[SystemSnapshot]

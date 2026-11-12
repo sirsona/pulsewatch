@@ -115,6 +115,7 @@ def test_application_lifespan_runs_and_stops_the_sampler(tmp_path: Path) -> None
         sampler_enabled=True,
         sample_interval_seconds=1,
         sampler_stale_after_seconds=5,
+        retention_enabled=False,
     )
     app = create_app(
         settings=settings,

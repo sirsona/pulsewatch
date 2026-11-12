@@ -2,13 +2,127 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
-from pulsewatch.api.schemas import SystemSnapshot
+from fastapi import APIRouter, HTTPException, Query, Request
+
+from pulsewatch.api.cursors import MAX_CURSOR_LENGTH, decode_cursor, encode_cursor
+from pulsewatch.api.schemas import HistoryResponse, SystemSnapshot
 from pulsewatch.core.logging import logger
 from pulsewatch.db.repository import MetricRepository
 
 router = APIRouter(prefix="/metrics", tags=["Metrics"])
+
+_DEFAULT_HISTORY_WINDOW = timedelta(hours=1)
+_MAX_HISTORY_WINDOW = timedelta(days=7)
+_MAX_HISTORY_LIMIT = 1000
+
+
+def _normalise_history_window(
+    start: datetime | None,
+    end: datetime | None,
+) -> tuple[datetime, datetime]:
+    """Apply defaults and validate the requested UTC history window."""
+    now = datetime.now(UTC)
+    end_time = end or now
+    start_time = start or (end_time - _DEFAULT_HISTORY_WINDOW)
+
+    if start_time.tzinfo is None or end_time.tzinfo is None:
+        raise HTTPException(
+            status_code=422,
+            detail="start and end must include a timezone.",
+        )
+
+    start_utc = start_time.astimezone(UTC)
+    end_utc = end_time.astimezone(UTC)
+    if start_utc >= end_utc:
+        raise HTTPException(
+            status_code=422,
+            detail="start must be earlier than end.",
+        )
+    if end_utc - start_utc > _MAX_HISTORY_WINDOW:
+        raise HTTPException(
+            status_code=422,
+            detail="The history window cannot exceed 7 days.",
+        )
+    return start_utc, end_utc
+
+
+@router.get(
+    "/history",
+    response_model=HistoryResponse,
+    summary="Get a page of persisted host metrics",
+    responses={
+        422: {
+            "description": "The time window or cursor is invalid.",
+            "content": {"application/problem+json": {}},
+        },
+        503: {
+            "description": "The metrics store is unavailable.",
+            "content": {"application/problem+json": {}},
+        },
+    },
+)
+async def history_metrics(
+    request: Request,
+    start: Annotated[
+        datetime | None,
+        Query(description="Inclusive UTC start. Defaults to one hour before end."),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        Query(description="Inclusive UTC end. Defaults to now."),
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=_MAX_HISTORY_LIMIT)] = 100,
+    cursor: Annotated[
+        str | None,
+        Query(
+            max_length=MAX_CURSOR_LENGTH,
+            description="Opaque next_cursor value from a previous page.",
+        ),
+    ] = None,
+) -> HistoryResponse:
+    """Return newest-first samples within an inclusive, bounded time range."""
+    start_utc, end_utc = _normalise_history_window(start, end)
+
+    before: tuple[datetime, int] | None = None
+    if cursor is not None:
+        try:
+            before = decode_cursor(cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    repository: MetricRepository = request.app.state.repository
+    try:
+        records = await repository.list_snapshots(
+            start=start_utc,
+            end=end_utc,
+            limit=limit + 1,
+            before=before,
+        )
+    except Exception as exc:
+        logger.exception(
+            "failed to read metric history",
+            extra={"event": "history_read_failed"},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="The metrics store is unavailable.",
+        ) from exc
+
+    has_more = len(records) > limit
+    page = records[:limit]
+    next_cursor = encode_cursor(page[-1]) if has_more and page else None
+
+    return HistoryResponse(
+        start=start_utc,
+        end=end_utc,
+        limit=limit,
+        count=len(page),
+        next_cursor=next_cursor,
+        samples=[record.snapshot for record in page],
+    )
 
 
 @router.get(

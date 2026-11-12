@@ -70,3 +70,72 @@ async def test_check_connection_on_a_reachable_database(database: Database) -> N
     repository = SqlAlchemyMetricRepository(database)
 
     await repository.check_connection()
+
+
+async def test_history_query_is_newest_first_and_time_bounded(
+    database: Database,
+) -> None:
+    repository = SqlAlchemyMetricRepository(database)
+    base = build_snapshot()
+    older = base.model_copy(update={"timestamp": base.timestamp - timedelta(seconds=20)})
+    middle = base.model_copy(update={"timestamp": base.timestamp - timedelta(seconds=10)})
+    newer = base
+
+    for snapshot in (older, middle, newer):
+        await repository.save_snapshot(snapshot)
+
+    page = await repository.list_snapshots(
+        start=older.timestamp,
+        end=newer.timestamp,
+        limit=2,
+    )
+
+    assert [record.snapshot.timestamp for record in page] == [
+        newer.timestamp,
+        middle.timestamp,
+    ]
+
+    next_page = await repository.list_snapshots(
+        start=older.timestamp,
+        end=newer.timestamp,
+        limit=2,
+        before=(page[-1].snapshot.timestamp, page[-1].id),
+    )
+
+    assert [record.snapshot.timestamp for record in next_page] == [older.timestamp]
+
+
+async def test_history_bounds_include_both_endpoints(database: Database) -> None:
+    repository = SqlAlchemyMetricRepository(database)
+    snapshot = build_snapshot()
+    await repository.save_snapshot(snapshot)
+
+    page = await repository.list_snapshots(
+        start=snapshot.timestamp,
+        end=snapshot.timestamp,
+        limit=10,
+    )
+
+    assert len(page) == 1
+    assert page[0].snapshot == snapshot
+
+
+async def test_delete_samples_before_cutoff(database: Database) -> None:
+    repository = SqlAlchemyMetricRepository(database)
+    snapshot = build_snapshot()
+    old = snapshot.model_copy(update={"timestamp": snapshot.timestamp - timedelta(days=10)})
+    await repository.save_snapshot(old)
+    await repository.save_snapshot(snapshot)
+
+    deleted = await repository.delete_samples_before(
+        snapshot.timestamp - timedelta(days=7),
+        batch_size=100,
+    )
+
+    assert deleted == 1
+    remaining = await repository.list_snapshots(
+        start=old.timestamp,
+        end=snapshot.timestamp,
+        limit=10,
+    )
+    assert [record.snapshot for record in remaining] == [snapshot]
