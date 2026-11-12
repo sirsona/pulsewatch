@@ -39,6 +39,7 @@ Verify:
 ```bash
 curl --fail --silent http://127.0.0.1:8000/health/ready | python -m json.tool
 curl --fail --silent http://127.0.0.1:8000/api/v1/metrics/current | python -m json.tool
+curl --fail --silent 'http://127.0.0.1:8000/api/v1/metrics/history?limit=5' | python -m json.tool
 ```
 
 Stop the stack:
@@ -158,12 +159,24 @@ PULSEWATCH_DATABASE_URL=postgresql+asyncpg://pulsewatch:replace-me@127.0.0.1:543
 PULSEWATCH_SAMPLER_ENABLED=true
 PULSEWATCH_SAMPLE_INTERVAL_SECONDS=15
 PULSEWATCH_SAMPLER_STALE_AFTER_SECONDS=45
+PULSEWATCH_RETENTION_ENABLED=true
+PULSEWATCH_RETENTION_DAYS=7
+PULSEWATCH_RETENTION_CLEANUP_INTERVAL_SECONDS=3600
+PULSEWATCH_RETENTION_BATCH_SIZE=1000
 ```
 
 The database URL is treated as a secret by the application. It still lives in a
 root-readable environment file and must be protected accordingly.
 
 ### 4. Install and start the unit
+
+Verify the unit syntax locally before installing it:
+
+```bash
+make verify-unit
+```
+
+Then install:
 
 ```bash
 sudo install -m 0644 deploy/systemd/pulsewatch.service \
@@ -312,10 +325,17 @@ capacity benchmark has been published. Size PostgreSQL storage from:
 ```text
 row_size ≈ full metric snapshot payload
 rows_per_day ≈ 86400 / PULSEWATCH_SAMPLE_INTERVAL_SECONDS
+retained_rows ≈ rows_per_day × PULSEWATCH_RETENTION_DAYS
 ```
 
-At the default 15-second interval, that is about 5,760 rows per host per day.
-Retention is not implemented yet; monitor table size until the cleanup job lands.
+At the default 15-second interval and 7-day retention, that is about 5,760 rows
+per host per day and roughly 40,320 retained rows. Row size depends on the JSON
+payload, indexes, and PostgreSQL overhead; measure your own database before
+sizing long-term storage.
+
+Retention runs hourly by default and deletes in batches. Cleanup failures are
+logged as `retention cleanup failed`; they do not change readiness, so monitor
+that log event and table size separately.
 
 ## Troubleshooting
 
@@ -325,6 +345,8 @@ Retention is not implemented yet; monitor table size until the cleanup job lands
 | `/health/ready` returns `503` with `database: unavailable` | PostgreSQL down, credentials wrong, or network blocked | Check `pg_isready`, credentials, and firewall |
 | `/health/ready` returns `503` with `sampler: stale` | Sampler cannot write samples | Inspect `metric sampling failed` logs and database disk space |
 | `/api/v1/metrics/current` returns `503` immediately after startup | No sample has been persisted yet | Wait for the first sample; check sampler logs |
+| History returns `422` | Window is naive, reversed, longer than 7 days, or the cursor is malformed | Use timezone-aware timestamps and reuse the returned cursor |
+| Retention logs failures | Database error, lock timeout, or insufficient privileges | Check PostgreSQL health and logs; adjust batch size if needed |
 | Migration fails with permission denied | Database role lacks schema privileges | Grant ownership or DDL privileges to the migration role |
 | Compose API restarts repeatedly | Migration or database connection failure | `docker compose logs pulsewatch`, then verify PostgreSQL health |
 | Disk or network metrics describe the container | Container namespace isolation | Use systemd or review host namespace trade-offs |

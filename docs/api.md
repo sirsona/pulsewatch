@@ -39,7 +39,7 @@ Returns service metadata for discovery and smoke tests.
 ```json
 {
   "name": "pulsewatch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "environment": "development",
   "documentation": "/docs",
   "health": {
@@ -58,7 +58,7 @@ not inspect PostgreSQL, the sampler, or host metrics.
 {
   "status": "ok",
   "service": "pulsewatch",
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
 ```
 
@@ -81,7 +81,7 @@ Ready response — HTTP `200`:
 {
   "status": "ok",
   "service": "pulsewatch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "checks": {
     "database": "ok",
     "sampler": "ok"
@@ -95,7 +95,7 @@ Degraded responses — HTTP `503`:
 {
   "status": "degraded",
   "service": "pulsewatch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "checks": {
     "database": "unavailable",
     "sampler": "stale"
@@ -155,6 +155,53 @@ configured interval.
 Cumulative disk and network counters are since boot, not since the previous
 sample. Subtract two samples to calculate a rate.
 
+### `GET /api/v1/metrics/history`
+
+Returns a bounded, newest-first page of persisted snapshots.
+
+Query parameters:
+
+| Parameter | Default | Constraints |
+| --- | --- | --- |
+| `start` | one hour before `end` | Timezone-aware ISO 8601 |
+| `end` | now | Timezone-aware ISO 8601 |
+| `limit` | `100` | 1–1000 samples per page |
+| `cursor` | none | Opaque `next_cursor` from a previous page |
+
+The time window is inclusive, must have `start < end`, and cannot exceed **7
+days**. A cursor must be used with the same `start` and `end` window.
+
+```bash
+curl -G http://127.0.0.1:8000/api/v1/metrics/history \
+  --data-urlencode 'start=2026-11-12T08:00:00+00:00' \
+  --data-urlencode 'end=2026-11-12T09:00:00+00:00' \
+  --data-urlencode 'limit=100'
+```
+
+Response:
+
+```json
+{
+  "start": "2026-11-12T08:00:00Z",
+  "end": "2026-11-12T09:00:00Z",
+  "limit": 100,
+  "count": 2,
+  "next_cursor": "eyJ2IjoxLCJhdCI6IjIwMjYtMTEtMTJUMDg6NTk6NTArMDA6MDAiLCJpZCI6MTIzfQ",
+  "samples": []
+}
+```
+
+- Samples are ordered newest first.
+- `count` is the number of samples in this page.
+- `next_cursor` is `null` when there are no more matching samples.
+- Pass `next_cursor` back as `cursor` to fetch the next page.
+- Cursors are deliberately opaque; do not parse or construct them.
+- Invalid windows and malformed cursors return `422` problem details.
+- An unavailable metrics store returns `503` problem details.
+
+The cleanup task retains samples for `PULSEWATCH_RETENTION_DAYS`, so a history
+window that extends beyond retention can be valid but return fewer samples.
+
 ### `GET /docs` and `GET /openapi.json`
 
 Interactive documentation and the machine-readable OpenAPI schema. Both return
@@ -195,6 +242,7 @@ Error codes:
 | `http_404` | 404 | Route not found |
 | `http_405` | 405 | Method not allowed |
 | `validation_error` | 422 | Invalid request payload |
+| `http_422` | 422 | Invalid history time window or cursor |
 | `http_503` | 503 | No sample is available or storage is unavailable |
 | `internal_server_error` | 500 | Unhandled server failure |
 
@@ -207,9 +255,8 @@ traces remain in the structured server logs and are not leaked to clients.
 
 ## Current limitations
 
-- No historical query endpoint yet. Only the latest stored sample is available
-  over HTTP.
-- No retention job yet; samples accumulate until an operator cleans them up.
+- No cross-host or hostname filtering; the service assumes a single monitored
+  host.
 - No authentication or rate limiting. Keep the service bound to loopback and put
   an authenticated reverse proxy in front before exposing it.
 - No CORS policy; browser clients should use a same-origin proxy.

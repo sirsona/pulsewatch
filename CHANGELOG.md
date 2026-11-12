@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Planned
+
+- Production backup/restore automation and load testing.
+- Optional aggregate history endpoints for long time ranges.
+
+## [0.2.0] - 2026-11-12
+
 ### Added
 
 - PostgreSQL-backed metric sample storage using async SQLAlchemy and asyncpg.
@@ -13,7 +20,12 @@ All notable changes to this project are documented here. The format is based on
 - Background sampler that collects on a configurable interval and persists each
   snapshot.
 - PostgreSQL and sampler-freshness checks on `/health/ready`.
-- PostgreSQL integration tests and a full Compose-stack CI smoke test.
+- Cursor-paginated `/api/v1/metrics/history` endpoint with bounded UTC windows.
+- Batched retention cleanup driven by `PULSEWATCH_RETENTION_*` settings.
+- PostgreSQL integration tests, history/retention tests, and a full
+  Compose-stack CI smoke test.
+- Systemd unit verification script and CI step.
+- `make run` now applies migrations before starting the reload server.
 
 ### Changed
 
@@ -23,12 +35,7 @@ All notable changes to this project are documented here. The format is based on
   degraded.
 - Compose now starts PostgreSQL and applies migrations before the API.
 - The systemd unit applies migrations before starting the service.
-
-### Planned
-
-- Historical metric query endpoint with time-range filtering.
-- Retention policy and cleanup job.
-- Production backup/restore automation and load testing.
+- Version advanced to `0.2.0`.
 
 ## [0.1.0] - 2026-11-10
 
@@ -49,5 +56,6 @@ All notable changes to this project are documented here. The format is based on
 - Hardened systemd unit and deployment documentation.
 - README, API contract, architecture notes, contributing, and security policies.
 
-[Unreleased]: https://github.com/sirsona/pulsewatch/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/sirsona/pulsewatch/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/sirsona/pulsewatch/releases/tag/v0.2.0
 [0.1.0]: https://github.com/sirsona/pulsewatch/releases/tag/v0.1.0

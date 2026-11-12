@@ -55,6 +55,6 @@
     <path d="M650 243 H826 L854 243 L880 196 L908 288 L936 219 L956 243 H1140" fill="none" stroke="url(#pulse)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
     <circle cx="956" cy="243" r="5" fill="#34d399"/>
     <circle cx="956" cy="243" r="12" fill="none" stroke="#34d399" stroke-opacity="0.35" stroke-width="2"/>
-    <text x="1140" y="278" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" text-anchor="end" letter-spacing="2">v0.1.0 · LIVE</text>
+    <text x="1140" y="278" fill="#64748b" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" text-anchor="end" letter-spacing="2">v0.2.0 · LIVE</text>
   </g>
 </svg>
