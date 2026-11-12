@@ -23,6 +23,7 @@ _EXTRA_FIELDS: Final[tuple[str, ...]] = (
     "duration_ms",
     "client_ip",
     "error_code",
+    "deleted_count",
 )
 
 logger = logging.getLogger("pulsewatch")

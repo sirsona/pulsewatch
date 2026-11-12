@@ -127,6 +127,7 @@ def test_openapi_documents_public_routes(client: TestClient) -> None:
     schema = client.get("/openapi.json").json()
 
     assert "/api/v1/metrics/current" in schema["paths"]
+    assert "/api/v1/metrics/history" in schema["paths"]
     assert "/health/live" in schema["paths"]
     assert "/health/ready" in schema["paths"]
     assert "Metrics" in {tag["name"] for tag in schema["tags"]}

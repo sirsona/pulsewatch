@@ -55,6 +55,9 @@ jobs:
       - name: Type-check
         run: uv run mypy src tests
 
+      - name: Verify systemd unit
+        run: ./scripts/verify-systemd-unit.sh
+
       - name: Run database migrations
         run: uv run alembic upgrade head
 
@@ -129,7 +132,8 @@ jobs:
               echo "Stack became ready after ${attempt}s"
               cat /tmp/ready.json
               curl --fail --silent http://127.0.0.1:8000/api/v1/metrics/current >/tmp/current.json
-              python3 -c 'import json; ready=json.load(open("/tmp/ready.json")); current=json.load(open("/tmp/current.json")); assert ready["checks"] == {"database": "ok", "sampler": "ok"}; assert current["hostname"]; assert current["cpu"]["logical_cores"] >= 1; print("Migrated database, sampler, and metrics endpoint verified")'
+              curl --fail --silent 'http://127.0.0.1:8000/api/v1/metrics/history?limit=1' >/tmp/history.json
+              python3 -c 'import json; ready=json.load(open("/tmp/ready.json")); current=json.load(open("/tmp/current.json")); history=json.load(open("/tmp/history.json")); assert ready["checks"] == {"database": "ok", "sampler": "ok"}; assert current["hostname"]; assert current["cpu"]["logical_cores"] >= 1; assert history["count"] == 1; print("Migrated database, sampler, current, and history endpoints verified")'
               exit 0
             fi
             sleep 1

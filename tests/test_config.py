@@ -35,6 +35,10 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert settings.sampler_enabled is True
     assert settings.sample_interval_seconds == 15.0
     assert settings.sampler_stale_after_seconds == 45.0
+    assert settings.retention_enabled is True
+    assert settings.retention_days == 7
+    assert settings.retention_cleanup_interval_seconds == 3600
+    assert settings.retention_batch_size == 1000
     assert "pulsewatch:pulsewatch" not in repr(settings)
 
 
@@ -54,6 +58,10 @@ def test_environment_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     monkeypatch.setenv("PULSEWATCH_SAMPLER_ENABLED", "false")
     monkeypatch.setenv("PULSEWATCH_SAMPLE_INTERVAL_SECONDS", "30")
     monkeypatch.setenv("PULSEWATCH_SAMPLER_STALE_AFTER_SECONDS", "90")
+    monkeypatch.setenv("PULSEWATCH_RETENTION_ENABLED", "false")
+    monkeypatch.setenv("PULSEWATCH_RETENTION_DAYS", "14")
+    monkeypatch.setenv("PULSEWATCH_RETENTION_CLEANUP_INTERVAL_SECONDS", "120")
+    monkeypatch.setenv("PULSEWATCH_RETENTION_BATCH_SIZE", "250")
 
     settings = Settings()
 
@@ -67,6 +75,10 @@ def test_environment_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     assert settings.sampler_enabled is False
     assert settings.sample_interval_seconds == 30.0
     assert settings.sampler_stale_after_seconds == 90.0
+    assert settings.retention_enabled is False
+    assert settings.retention_days == 14
+    assert settings.retention_cleanup_interval_seconds == 120
+    assert settings.retention_batch_size == 250
     assert (
         settings.database_url.get_secret_value()
         == "postgresql+asyncpg://test-user:test-pass@db.example:5432/test-db"

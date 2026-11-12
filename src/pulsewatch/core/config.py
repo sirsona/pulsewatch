@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     sampler_enabled: bool = True
     sample_interval_seconds: float = Field(default=15.0, ge=1.0, le=3600.0)
     sampler_stale_after_seconds: float = Field(default=45.0, ge=1.0, le=86_400.0)
+    retention_enabled: bool = True
+    retention_days: int = Field(default=7, ge=1, le=365)
+    retention_cleanup_interval_seconds: int = Field(default=3600, ge=60, le=86_400)
+    retention_batch_size: int = Field(default=1000, ge=1, le=10_000)
 
     @field_validator("disk_path")
     @classmethod

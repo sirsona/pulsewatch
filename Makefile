@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install run migrate test test-integration lint format format-check typecheck check build docker-build clean
+.PHONY: help install run migrate test test-integration lint format format-check typecheck verify-unit check build docker-build clean
 
 help: ## Show available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -8,7 +8,7 @@ help: ## Show available commands
 install: ## Create the virtualenv and install all dependencies
 	uv sync --all-groups
 
-run: ## Run the API locally with auto-reload
+run: migrate ## Apply migrations, then run the API locally with auto-reload
 	uv run pulsewatch --reload
 
 migrate: ## Apply PostgreSQL migrations
@@ -33,7 +33,10 @@ format-check: ## Verify formatting without changing files
 typecheck: ## Run static type checking
 	uv run mypy src tests
 
-check: format-check lint typecheck test ## Run every quality gate
+verify-unit: ## Verify the systemd unit without installing it
+	./scripts/verify-systemd-unit.sh
+
+check: format-check lint typecheck test verify-unit ## Run every quality gate
 
 build: ## Build wheel and source distribution
 	uv build
