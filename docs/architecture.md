@@ -26,6 +26,7 @@ flowchart TD
         routes[FastAPI routes]
         schemas[Pydantic contracts]
         sampler[SamplerService]
+        retention[RetentionService]
         collector[SystemMetricsCollector]
         repo[SqlAlchemyMetricRepository]
         config[Settings]
@@ -40,6 +41,7 @@ flowchart TD
     routes --> errors
     sampler --> collector
     sampler --> repo
+    retention --> repo
     collector --> proc[/proc, /sys/]
     repo --> postgres[(PostgreSQL)]
     config --> app
@@ -57,17 +59,19 @@ flowchart TD
 | `pulsewatch.collectors` | Collector protocol and psutil implementation |
 | `pulsewatch.db` | Async engine, SQLAlchemy model, repository |
 | `pulsewatch.services.sampler` | Fixed-cadence collection loop |
+| `pulsewatch.services.retention` | Batched expired-sample cleanup |
+| `pulsewatch.api.cursors` | Opaque history pagination cursors |
 | `migrations` | Alembic environment and schema versions |
 
 ## Startup and shutdown
 
 The FastAPI lifespan owns long-lived resources:
 
-1. `create_app()` constructs the database engine, repository, collector, and
-   sampler. Creating an engine does not open a database connection.
+1. `create_app()` constructs the database engine, repository, collector, sampler,
+   and retention service. Creating an engine does not open a database connection.
 2. On startup, the sampler task is created. It attempts its first collection
-   immediately.
-3. On shutdown, the sampler stop event is set and the task is awaited.
+   immediately. The retention task also starts and runs an initial cleanup.
+3. On shutdown, both stop events are set and their tasks are awaited.
 4. The database engine is disposed.
 
 If PostgreSQL is unavailable at startup, the API still starts; sampling fails,
@@ -107,8 +111,9 @@ Details:
 2. `RequestContextMiddleware` resolves or generates a request ID and starts a
    timer.
 3. FastAPI routes the request.
-4. Metrics routes read the latest stored sample from the repository. Health
-   routes query the repository or sampler state. No route calls psutil.
+4. Metrics routes read the latest stored sample or a bounded history page from
+   the repository. Health routes query the repository or sampler state. No route
+   calls psutil.
 5. Pydantic serialises the response.
 6. The middleware adds the request ID header and writes an access log.
 7. Unexpected exceptions become a generic `500` problem response; known
@@ -136,7 +141,26 @@ same repository logic can run against SQLite in tests.
 
 Alembic owns the schema. The application does not call `create_all()` at
 startup. Compose runs `alembic upgrade head` before starting the app; the systemd
-unit uses `ExecStartPre`.
+unit uses `ExecStartPre`. Local development should use `make run`, which applies
+migrations before starting the API.
+
+## History and retention
+
+`GET /api/v1/metrics/history` applies a bounded, inclusive UTC window (maximum
+seven days) and returns newest-first samples with cursor pagination. The cursor
+encodes the collection timestamp and row identity of the last item on the page;
+the next query uses a strict keyset condition, avoiding large offsets. Malformed
+or unsupported cursors are rejected with `422`.
+
+`RetentionService` runs in the application lifespan. Every cleanup:
+
+1. Computes a cutoff from `PULSEWATCH_RETENTION_DAYS`.
+2. Selects a bounded batch of old row IDs.
+3. Deletes that batch.
+4. Repeats until a batch is smaller than the configured batch size.
+
+Batched deletes avoid long locks and unbounded transactions. Cleanup failures are
+logged and retried on the next interval; they do not make the API unready.
 
 ## Readiness semantics
 
@@ -186,8 +210,8 @@ Three layers:
 
 1. Framework HTTP exceptions and request-validation errors are converted by
    registered handlers.
-2. The metrics endpoint maps repository failures and an empty store to `503`
-   problem details.
+2. The metrics endpoints map repository failures and an empty store to `503`
+   problem details; invalid history windows and cursors return `422`.
 3. Unexpected exceptions are caught by the request middleware, logged with a
    traceback, and replaced with a generic response.
 
@@ -195,18 +219,23 @@ Three layers:
 
 - Route tests use a fake repository and collector; they do not require a
   database.
-- Sampler tests use a fake collector/repository and a real asyncio loop.
-- Repository tests run against SQLite for fast coverage of query and JSON
-  round-tripping.
+- Sampler and retention tests use fake collectors/repositories and a real asyncio
+  loop.
+- Cursor tests cover round-tripping, timezone normalisation, and malformed input.
+- Repository tests run against SQLite for fast coverage of query, pagination,
+  JSON round-tripping, and batched deletion.
 - PostgreSQL integration tests run against a migrated database when
   `PULSEWATCH_TEST_DATABASE_URL` is set; CI provides a PostgreSQL service.
 - The container CI job builds the image and starts the real Compose stack,
   checking migration, readiness, and a stored sample.
+- `scripts/verify-systemd-unit.sh` checks the unit against stubbed install paths
+  without requiring root.
 
 ## Next design steps
 
-- History API with bounded time ranges and pagination.
-- Retention job with batched deletes.
 - Multi-process safety or a dedicated sampler process if scaling beyond one
   application worker.
-- Authentication at the edge if the API is exposed beyond loopback.
+- Authentication and rate limiting at the edge if the API is exposed beyond
+  loopback.
+- Backup/restore automation and load testing.
+- Optional aggregate endpoints for long time ranges.

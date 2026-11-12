@@ -19,17 +19,17 @@
 </p>
 
 > [!NOTE]
-> **Project status: early development.** PulseWatch now samples host metrics on a
-> fixed cadence, stores them in PostgreSQL, and serves the latest persisted
-> snapshot. Historical queries and retention are the next milestone. See the
-> [roadmap](#roadmap).
+> **Project status: `v0.2.0`.** PulseWatch samples host metrics on a fixed
+> cadence, stores them in PostgreSQL, serves the latest sample and bounded
+> history, and removes expired data. See the [roadmap](#roadmap).
 
 ## Overview
 
 PulseWatch runs a single background sampler against the local Linux host,
-persists each snapshot in PostgreSQL, and exposes the latest stored sample over a
-versioned HTTP API. It is designed to run as a hardened **systemd** service or as
-a **Docker Compose** stack.
+persists each snapshot in PostgreSQL, exposes the latest sample and bounded
+history over a versioned HTTP API, and deletes expired samples on a retention
+schedule. It is designed to run as a hardened **systemd** service or as a
+**Docker Compose** stack.
 
 The service is intentionally built beyond the happy path:
 
@@ -37,6 +37,8 @@ The service is intentionally built beyond the happy path:
 - one psutil collection path with a fixed sampling interval
 - PostgreSQL storage through an async repository
 - Alembic-managed schema
+- cursor-paginated history queries
+- batched retention cleanup
 - RFC 9457 error responses and request correlation IDs
 - structured JSON logs
 - unit and PostgreSQL integration tests
@@ -57,9 +59,9 @@ The service is intentionally built beyond the happy path:
 | Typed config, Ruff, mypy, pytest, coverage gate | ✅ Implemented |
 | PostgreSQL integration tests + full-stack CI | ✅ Implemented |
 | Multi-stage Docker image + Compose stack | ✅ Implemented |
-| Hardened systemd unit | ✅ Included; not installed by CI |
-| Historical metrics endpoint | 🚧 Planned |
-| Retention policy | 🚧 Planned |
+| Hardened systemd unit + static verification | ✅ Included and verified |
+| Historical metrics endpoint | ✅ Implemented |
+| Batched retention cleanup | ✅ Implemented |
 
 ## Architecture
 
@@ -72,11 +74,13 @@ flowchart LR
         api[FastAPI app]
         middleware[Request ID + access logs]
         sampler[Background sampler]
+        retention[Retention service]
         collector[psutil collector]
         repository[Async repository]
         api --> middleware
         sampler --> collector
         sampler --> repository
+        retention --> repository
         api --> repository
     end
 
@@ -84,16 +88,12 @@ flowchart LR
     repository -->|SQLAlchemy + asyncpg| postgres[(PostgreSQL)]
     probes[systemd / Docker healthcheck] --> health[Health probes]
     health --> api
-
-    history[History API] -. planned .-> repository
-    retention[Retention job] -. planned .-> postgres
 ```
 
 Only the sampler calls psutil. It runs immediately at startup and then on the
-configured interval, writing each snapshot through the repository. The metrics
-endpoint reads the latest stored snapshot rather than triggering another
-collection. That gives CPU usage a stable measurement window and keeps API
-requests fast.
+configured interval, writing each snapshot through the repository. The current
+and history endpoints read stored samples rather than triggering another
+collection. Retention deletes expired samples in bounded batches.
 
 Readiness checks PostgreSQL connectivity and sampler freshness. Liveness remains
 a cheap process-level check.
@@ -145,9 +145,11 @@ uv sync
 cp .env.example .env
 # Edit PULSEWATCH_DATABASE_URL if your database differs from the default.
 
-uv run alembic upgrade head
-uv run pulsewatch --reload
+make run
 ```
+
+`make run` applies Alembic migrations before starting the reload server. If you
+start the CLI directly, run `uv run alembic upgrade head` first.
 
 The default configuration expects:
 
@@ -162,13 +164,14 @@ make check        # Ruff + mypy + pytest with coverage
 make test         # pytest only
 make lint         # Ruff
 make typecheck    # mypy
+make verify-unit  # verify the systemd unit without installing it
 make migrate      # apply PostgreSQL migrations
 ```
 
-The suite enforces **85% branch coverage** and currently has **66 tests at
-roughly 97% coverage**. CI runs on Python 3.12 and 3.13, runs the PostgreSQL
-integration tests, builds the image, and boots the complete Compose stack before
-checking readiness and a stored metric.
+The suite enforces **85% branch coverage**. CI runs on Python 3.12 and 3.13,
+runs the PostgreSQL integration tests, verifies the systemd unit, builds the
+image, and boots the complete Compose stack before checking readiness and a
+stored metric.
 
 To run the PostgreSQL integration test locally, apply migrations and provide a
 test database URL:
@@ -192,6 +195,7 @@ intentionally unversioned.
 | `GET` | `/health/live` | Process liveness probe |
 | `GET` | `/health/ready` | PostgreSQL and sampler readiness |
 | `GET` | `/api/v1/metrics/current` | Latest persisted host metrics snapshot |
+| `GET` | `/api/v1/metrics/history` | Bounded, cursor-paginated history |
 | `GET` | `/docs` | Interactive OpenAPI documentation |
 | `GET` | `/openapi.json` | OpenAPI schema |
 
@@ -201,6 +205,17 @@ fails. It does not call psutil.
 
 `/api/v1/metrics/current` returns `503` until the first sample is stored or when
 the metrics store is unavailable.
+
+History accepts `start`, `end`, `limit`, and `cursor`:
+
+```bash
+curl -G http://127.0.0.1:8000/api/v1/metrics/history \
+  --data-urlencode 'limit=100'
+```
+
+The default window is the last hour. Windows are inclusive, limited to seven
+days, and ordered newest first. The response includes `next_cursor`; pass it back
+as `cursor` for the next page. Malformed windows and cursors return `422`.
 
 ### Sample response
 
@@ -306,6 +321,10 @@ from a local `.env` file. Unknown variables are ignored.
 | `PULSEWATCH_SAMPLER_ENABLED` | `true` | Set `false` only for API-only tests or maintenance |
 | `PULSEWATCH_SAMPLE_INTERVAL_SECONDS` | `15` | Minimum 1 second |
 | `PULSEWATCH_SAMPLER_STALE_AFTER_SECONDS` | `45` | Must be at least the sampling interval |
+| `PULSEWATCH_RETENTION_ENABLED` | `true` | Enable periodic expired-sample cleanup |
+| `PULSEWATCH_RETENTION_DAYS` | `7` | Samples older than this are deleted |
+| `PULSEWATCH_RETENTION_CLEANUP_INTERVAL_SECONDS` | `3600` | Cleanup cadence, minimum 60s |
+| `PULSEWATCH_RETENTION_BATCH_SIZE` | `1000` | Maximum rows deleted per batch |
 
 `.env` is ignored by Git. Start from [.env.example](.env.example).
 
@@ -358,7 +377,8 @@ A hardened unit is provided at
 `/etc/pulsewatch/pulsewatch.env`, and applies sandboxing directives such as
 `ProtectSystem=strict`, `NoNewPrivileges`, and a system-call allow-list.
 
-The full installation walkthrough, including PostgreSQL setup and migration
+Run `make verify-unit` to validate the unit against stubbed install paths without
+root. The full installation walkthrough, including PostgreSQL setup and migration
 verification, is in [docs/deployment.md](docs/deployment.md#systemd).
 
 ## Project structure
@@ -379,9 +399,10 @@ pulsewatch/
 │   ├── collectors/             # psutil collector behind a protocol
 │   ├── core/                   # Config, logging, errors, middleware
 │   ├── db/                     # Engine, model, repository
-│   ├── services/               # Background sampler
+│   ├── services/               # Background sampler and retention cleanup
 │   ├── __main__.py             # `pulsewatch` CLI
 │   └── main.py                 # Application factory and lifespan
+├── scripts/                    # Systemd unit verification
 ├── tests/
 │   ├── integration/            # PostgreSQL-backed tests
 │   └── test_*.py               # Unit and API tests
@@ -404,8 +425,9 @@ pulsewatch/
 - [x] PostgreSQL schema, async repository, and Alembic migration
 - [x] Background sampler with configurable interval
 - [x] Readiness based on PostgreSQL and sampler freshness
-- [ ] Historical metric query endpoint with time-range filters
-- [ ] Retention policy and cleanup job
+- [x] Historical metric query endpoint with time-range filters
+- [x] Retention policy and batched cleanup job
+- [x] Static systemd unit verification and local migration workflow
 - [ ] Production runbook: reverse proxy, TLS, log shipping, backup/restore
 - [ ] Load tests and published performance characteristics
 
@@ -416,10 +438,14 @@ pulsewatch/
   sampling artifacts.
 - **Latest persisted sample.** `/current` reads from the repository instead of
   collecting on demand. It stays fast and consistent with stored history.
+- **Keyset history pagination.** Opaque cursors encode collection time and row
+  identity, avoiding large offsets and unstable pages.
+- **Batched retention.** Expired rows are deleted in bounded batches to avoid
+  long locks and unbounded transactions.
 - **Async storage, threaded collection.** SQLAlchemy and asyncpg are async; the
   blocking psutil call runs through `asyncio.to_thread`.
-- **Explicit lifecycle.** The sampler starts and stops with the FastAPI lifespan.
-  The database engine is disposed during shutdown.
+- **Explicit lifecycle.** The sampler and retention service start and stop with
+  the FastAPI lifespan. The database engine is disposed during shutdown.
 - **Readiness is dependency-aware.** PostgreSQL connectivity and sample freshness
   both matter. A degraded service returns `503` with detailed checks rather than
   a generic server error.

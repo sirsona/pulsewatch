@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest `0.1.x` release and the `main` branch.
+Security fixes are provided for the latest `0.2.x` release and the `main` branch.
 Older snapshots are not supported.
 
 ## Reporting a vulnerability
@@ -57,8 +57,9 @@ accept arbitrary paths.
 
 The database URL is loaded from the environment or `.env` and represented as a
 `SecretStr`; it is not included in application logs or settings representations.
-Schema changes are managed by reviewed Alembic migrations. Retention is not yet
-implemented, so disk exhaustion remains an operational risk.
+Schema changes are managed by reviewed Alembic migrations. Retention is enabled
+by default, but disabling it or misconfiguring the retention window can cause
+unbounded storage growth; monitor table size and cleanup logs.
 
 The current API has no authentication, rate limiting, or CORS policy. These are
 known limitations and must be handled at the deployment edge.

@@ -15,10 +15,12 @@ cd pulsewatch
 uv sync
 cp .env.example .env
 
-# Update PULSEWATCH_DATABASE_URL if needed, then create the schema.
-uv run alembic upgrade head
-uv run pulsewatch --reload
+# Update PULSEWATCH_DATABASE_URL if needed.
+make run
 ```
+
+`make run` applies Alembic migrations before starting the reload server. If you
+invoke the CLI directly, run `uv run alembic upgrade head` first.
 
 For an integration-test database:
 
@@ -42,6 +44,7 @@ That runs:
 - `ruff check .`
 - `mypy src tests`
 - `pytest` with branch coverage and an 85% floor
+- `scripts/verify-systemd-unit.sh`
 
 ## Guidelines
 
@@ -69,6 +72,8 @@ That runs:
 - Repository tests use SQLite for speed; PostgreSQL integration tests are marked
   with `@pytest.mark.integration` and run when `PULSEWATCH_TEST_DATABASE_URL` is
   set.
+- Use injected clocks for retention tests instead of sleeping.
+- Test cursor boundaries, malformed cursors, and same-timestamp ordering.
 - Do not lower the coverage threshold to make a change pass.
 
 ### Commits and pull requests
@@ -89,6 +94,7 @@ That runs:
 - [ ] mypy passes for `src` and `tests`.
 - [ ] Public API or configuration changes are documented.
 - [ ] Database changes include a migration and integration coverage.
+- [ ] New background service loops have start/stop and failure-path tests.
 - [ ] Deployment-sensitive changes are reflected in `docs/deployment.md`.
 - [ ] CI is green.
 
