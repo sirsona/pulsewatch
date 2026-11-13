@@ -59,13 +59,24 @@ jobs:
         run: ./scripts/verify-systemd-unit.sh
 
       - name: Run database migrations
-        run: uv run alembic upgrade head
+        run: uv run pulsewatch-migrate
 
       - name: Test with coverage
         run: uv run pytest
 
+      - name: Verify integration-test target
+        run: make test-integration
+
       - name: Build distributions
         run: uv build
+
+      - name: Verify installed wheel and migrations
+        run: |
+          uv venv /tmp/pulsewatch-wheel --python 3.12
+          uv pip install --python /tmp/pulsewatch-wheel/bin/python dist/*.whl
+          /tmp/pulsewatch-wheel/bin/pulsewatch --version
+          /tmp/pulsewatch-wheel/bin/pulsewatch-migrate
+          /tmp/pulsewatch-wheel/bin/python -c 'from pulsewatch.migrate import migration_scripts_path; p = migration_scripts_path(); assert (p / "env.py").is_file(); print(f"packaged migrations: {p}")'
 
       - name: Upload distributions
         uses: actions/upload-artifact@v7
@@ -82,6 +93,23 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: pulsewatch
+          POSTGRES_USER: pulsewatch
+          POSTGRES_PASSWORD: pulsewatch
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pulsewatch -d pulsewatch"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      PULSEWATCH_DATABASE_URL: postgresql+asyncpg://pulsewatch:pulsewatch@127.0.0.1:5432/pulsewatch
+      PULSEWATCH_TEST_DATABASE_URL: postgresql+asyncpg://pulsewatch:pulsewatch@127.0.0.1:5432/pulsewatch
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -97,6 +125,9 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --locked --python ${{ matrix.python-version }}
+
+      - name: Run database migrations
+        run: uv run --python ${{ matrix.python-version }} pulsewatch-migrate
 
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} pytest

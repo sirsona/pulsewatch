@@ -27,14 +27,15 @@ services:
     command:
       - sh
       - -c
-      - alembic upgrade head && exec pulsewatch
+      - pulsewatch-migrate && exec pulsewatch
     depends_on:
       postgres:
         condition: service_healthy
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      PULSEWATCH_ENVIRONMENT: production
+      # Local demo stack. Use production + docs disabled for shared deployments.
+      PULSEWATCH_ENVIRONMENT: development
       PULSEWATCH_LOG_FORMAT: json
       PULSEWATCH_DOCS_ENABLED: "true"
       PULSEWATCH_DATABASE_URL: postgresql+asyncpg://pulsewatch:pulsewatch@postgres:5432/pulsewatch

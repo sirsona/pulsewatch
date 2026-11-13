@@ -35,8 +35,9 @@ behind an authenticated, TLS-terminating reverse proxy.
 - Keep the provided systemd sandboxing or the read-only container flags.
 - Treat container host-namespace options (`--pid=host`, `--network=host`, host
   path mounts) as security decisions that require review.
-- Treat `PULSEWATCH_DATABASE_URL` as a secret. It contains database credentials.
-- Restrict database network access and grant the application least privilege.
+- Treat `PULSEWATCH_DATABASE_URL` and `PULSEWATCH_MIGRATION_DATABASE_URL` as secrets.
+- Run migrations with a dedicated DDL role and give the API role DML only.
+- Restrict database network access.
 - Keep Python dependencies current and review Dependabot updates.
 
 ## Threat model
@@ -51,12 +52,13 @@ The primary risks considered by this project are:
 6. Privilege escalation from the service account.
 
 Configuration paths are validated, responses are typed, and input surfaces are
-limited to headers. The only filesystem path read is the validated
-`PULSEWATCH_DISK_PATH` plus psutil's OS interfaces. Do not add endpoints that
-accept arbitrary paths.
+limited to headers and validated history query parameters. The only filesystem
+path read is the validated `PULSEWATCH_DISK_PATH` plus psutil's OS interfaces. Do
+not add endpoints that accept arbitrary paths.
 
-The database URL is loaded from the environment or `.env` and represented as a
-`SecretStr`; it is not included in application logs or settings representations.
+Database URLs are loaded from the environment or `.env` and represented as
+`SecretStr` values; they are not included in application logs or settings
+representations.
 Schema changes are managed by reviewed Alembic migrations. Retention is enabled
 by default, but disabling it or misconfiguring the retention window can cause
 unbounded storage growth; monitor table size and cleanup logs.

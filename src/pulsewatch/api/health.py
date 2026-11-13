@@ -8,6 +8,7 @@ from pulsewatch import __version__
 from pulsewatch.api.schemas import HealthResponse
 from pulsewatch.core.config import Settings
 from pulsewatch.core.logging import logger
+from pulsewatch.db.errors import StorageUnavailableError
 from pulsewatch.db.repository import MetricRepository
 from pulsewatch.services.sampler import SamplerService
 
@@ -17,6 +18,7 @@ router = APIRouter(tags=["Health"])
 @router.get(
     "/health/live",
     response_model=HealthResponse,
+    response_model_exclude_none=True,
     summary="Check that the process is running",
 )
 def liveness() -> HealthResponse:
@@ -43,7 +45,7 @@ async def readiness(request: Request, response: Response) -> HealthResponse:
     database_ok = True
     try:
         await repository.check_connection()
-    except Exception:
+    except StorageUnavailableError:
         database_ok = False
         logger.warning(
             "readiness database check failed",

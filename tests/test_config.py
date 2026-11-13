@@ -32,6 +32,7 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert settings.docs_enabled is True
     assert settings.disk_path == Path("/")
     assert settings.database_url.get_secret_value().startswith("postgresql+asyncpg://")
+    assert settings.migration_database_url is None
     assert settings.sampler_enabled is True
     assert settings.sample_interval_seconds == 15.0
     assert settings.sampler_stale_after_seconds == 45.0
@@ -62,6 +63,10 @@ def test_environment_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     monkeypatch.setenv("PULSEWATCH_RETENTION_DAYS", "14")
     monkeypatch.setenv("PULSEWATCH_RETENTION_CLEANUP_INTERVAL_SECONDS", "120")
     monkeypatch.setenv("PULSEWATCH_RETENTION_BATCH_SIZE", "250")
+    monkeypatch.setenv(
+        "PULSEWATCH_MIGRATION_DATABASE_URL",
+        "postgresql+asyncpg://migrator:migrator-pass@db.example:5432/test-db",
+    )
 
     settings = Settings()
 
@@ -79,6 +84,11 @@ def test_environment_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) 
     assert settings.retention_days == 14
     assert settings.retention_cleanup_interval_seconds == 120
     assert settings.retention_batch_size == 250
+    assert (
+        settings.migration_database_url is not None
+        and settings.migration_database_url.get_secret_value()
+        == "postgresql+asyncpg://migrator:migrator-pass@db.example:5432/test-db"
+    )
     assert (
         settings.database_url.get_secret_value()
         == "postgresql+asyncpg://test-user:test-pass@db.example:5432/test-db"
@@ -174,4 +184,12 @@ def test_stale_threshold_must_cover_the_sampling_interval(tmp_path: Path) -> Non
             disk_path=tmp_path,
             sample_interval_seconds=60,
             sampler_stale_after_seconds=30,
+        )
+
+
+def test_invalid_migration_database_url_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="migration_database_url"):
+        Settings(
+            disk_path=tmp_path,
+            migration_database_url=SecretStr("sqlite+aiosqlite:///test.db"),
         )

@@ -30,7 +30,7 @@ What happens:
 
 1. PostgreSQL starts with the `pulsewatch-postgres` volume.
 2. The API container waits for PostgreSQL's health check.
-3. The API command runs `alembic upgrade head`.
+3. The API command runs `pulsewatch-migrate`.
 4. The sampler writes its first sample immediately.
 5. The readiness health check verifies both the database and sampler freshness.
 
@@ -53,8 +53,9 @@ The credentials in `compose.yaml` are development defaults. For a shared
 environment, override the database password and the API's full
 `PULSEWATCH_DATABASE_URL`. URL-encode special characters in passwords.
 
-Compose binds the API to `127.0.0.1`. Set `PULSEWATCH_DOCS_ENABLED=false` before
-exposing the service beyond a trusted machine.
+Compose binds the API to `127.0.0.1` and uses the `development` environment so
+the local `/docs` page is available. For any shared environment, set
+`PULSEWATCH_ENVIRONMENT=production` and `PULSEWATCH_DOCS_ENABLED=false`.
 
 ## Standalone Docker
 
@@ -73,7 +74,7 @@ docker run --rm \
   -e PULSEWATCH_DATABASE_URL='postgresql+asyncpg://pulsewatch:password@db-host:5432/pulsewatch' \
   -p 127.0.0.1:8000:8000 \
   pulsewatch:local \
-  sh -c 'alembic upgrade head && exec pulsewatch'
+  sh -c 'pulsewatch-migrate && exec pulsewatch'
 ```
 
 The image runs as UID/GID `10001` and includes a liveness health check. Compose
@@ -117,8 +118,9 @@ sudo -u pulsewatch /opt/pulsewatch/.venv/bin/pip install --no-cache-dir --upgrad
 sudo -u pulsewatch /opt/pulsewatch/.venv/bin/pip install --no-cache-dir /opt/pulsewatch
 ```
 
-The entrypoint is `/opt/pulsewatch/.venv/bin/pulsewatch` and Alembic is available
-at `/opt/pulsewatch/.venv/bin/alembic`.
+The entrypoints are `/opt/pulsewatch/.venv/bin/pulsewatch` and
+`/opt/pulsewatch/.venv/bin/pulsewatch-migrate`. The wheel bundles the Alembic
+scripts, so migrations do not depend on the current working directory.
 
 ### 2. Create the PostgreSQL database
 
@@ -126,14 +128,25 @@ On the database host:
 
 ```bash
 sudo -u postgres psql <<'SQL'
-CREATE ROLE pulsewatch LOGIN PASSWORD 'replace-with-a-strong-password';
-CREATE DATABASE pulsewatch OWNER pulsewatch;
+CREATE ROLE pulsewatch_migrator LOGIN PASSWORD 'replace-with-a-migration-password';
+CREATE ROLE pulsewatch_app LOGIN PASSWORD 'replace-with-an-app-password';
+CREATE DATABASE pulsewatch OWNER pulsewatch_migrator;
+SQL
+
+sudo -u postgres psql -d pulsewatch <<'SQL'
+GRANT CONNECT ON DATABASE pulsewatch TO pulsewatch_app;
+GRANT USAGE ON SCHEMA public TO pulsewatch_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE pulsewatch_migrator IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO pulsewatch_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE pulsewatch_migrator IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO pulsewatch_app;
 SQL
 ```
 
 Restrict network access with PostgreSQL's `pg_hba.conf` and firewall rules. The
-application needs only `CONNECT` on its database and DML on its own tables; the
-migration account needs schema-change privileges.
+application role needs only `CONNECT`, schema usage, and DML. The migration role
+owns the schema and performs DDL. If the schema already exists, grant the app
+role access to the existing tables and sequences as well.
 
 ### 3. Install configuration
 
@@ -155,7 +168,8 @@ PULSEWATCH_LOG_FORMAT=json
 PULSEWATCH_DISK_PATH=/
 PULSEWATCH_REQUEST_ID_HEADER=X-Request-ID
 PULSEWATCH_DOCS_ENABLED=false
-PULSEWATCH_DATABASE_URL=postgresql+asyncpg://pulsewatch:replace-me@127.0.0.1:5432/pulsewatch
+PULSEWATCH_DATABASE_URL=postgresql+asyncpg://pulsewatch_app:replace-me@127.0.0.1:5432/pulsewatch
+PULSEWATCH_MIGRATION_DATABASE_URL=postgresql+asyncpg://pulsewatch_migrator:replace-me@127.0.0.1:5432/pulsewatch
 PULSEWATCH_SAMPLER_ENABLED=true
 PULSEWATCH_SAMPLE_INTERVAL_SECONDS=15
 PULSEWATCH_SAMPLER_STALE_AFTER_SECONDS=45
@@ -165,12 +179,16 @@ PULSEWATCH_RETENTION_CLEANUP_INTERVAL_SECONDS=3600
 PULSEWATCH_RETENTION_BATCH_SIZE=1000
 ```
 
-The database URL is treated as a secret by the application. It still lives in a
-root-readable environment file and must be protected accordingly.
+Both database URLs are treated as secrets by the application. They still live in
+a root-readable environment file and must be protected accordingly. The app role
+never needs DDL privileges; the migration role is used only by
+`pulsewatch-migrate`.
 
 ### 4. Install and start the unit
 
-Verify the unit syntax locally before installing it:
+The CI and local verification are **static**: they check unit syntax against
+stubbed install paths and do not install or start the service. Verify syntax
+before installing it, then perform the live checks below on the target host:
 
 ```bash
 make verify-unit
@@ -185,8 +203,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now pulsewatch
 ```
 
-The unit has an `ExecStartPre` that applies migrations before the API starts.
-Verify:
+The unit has an `ExecStartPre` that applies migrations with the dedicated
+migration URL before the API starts. Verify the live installation:
 
 ```bash
 systemctl status pulsewatch --no-pager
@@ -237,17 +255,17 @@ Apply manually:
 
 ```bash
 # Docker Compose
-docker compose run --rm pulsewatch alembic upgrade head
+docker compose run --rm pulsewatch pulsewatch-migrate
 
 # systemd (loads the same environment file as the unit)
-sudo -u pulsewatch sh -c 'set -a; . /etc/pulsewatch/pulsewatch.env; set +a; /opt/pulsewatch/.venv/bin/alembic upgrade head'
+sudo -u pulsewatch sh -c 'set -a; . /etc/pulsewatch/pulsewatch.env; set +a; /opt/pulsewatch/.venv/bin/pulsewatch-migrate'
 ```
 
-Check the current revision:
+Check the current revision directly in PostgreSQL:
 
 ```bash
-docker compose run --rm pulsewatch alembic current
-sudo -u pulsewatch sh -c 'set -a; . /etc/pulsewatch/pulsewatch.env; set +a; /opt/pulsewatch/.venv/bin/alembic current'
+docker compose exec -T postgres psql -U pulsewatch -d pulsewatch \
+  -c 'select version_num from alembic_version;'
 ```
 
 Before upgrading across schema changes:

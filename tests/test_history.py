@@ -72,6 +72,49 @@ def test_history_cursor_returns_the_next_page(app: FastAPI, client: TestClient) 
     assert payload["samples"][0]["timestamp"] == "2026-01-15T12:00:00Z"
 
 
+def test_history_cursor_reuses_its_bound_window(app: FastAPI, client: TestClient) -> None:
+    repository = app.state.repository
+    assert isinstance(repository, FakeRepository)
+    repository.records = history_records()
+
+    first = client.get(
+        "/api/v1/metrics/history",
+        params={**WINDOW, "limit": 2},
+    ).json()
+    second = client.get(
+        "/api/v1/metrics/history",
+        params={"limit": 2, "cursor": first["next_cursor"]},
+    )
+
+    assert second.status_code == 200
+    assert second.json()["samples"][0]["timestamp"] == "2026-01-15T12:00:00Z"
+    assert second.json()["start"] == first["start"]
+    assert second.json()["end"] == first["end"]
+
+
+def test_history_cursor_rejects_a_different_window(app: FastAPI, client: TestClient) -> None:
+    repository = app.state.repository
+    assert isinstance(repository, FakeRepository)
+    repository.records = history_records()
+
+    first = client.get(
+        "/api/v1/metrics/history",
+        params={**WINDOW, "limit": 2},
+    ).json()
+    response = client.get(
+        "/api/v1/metrics/history",
+        params={
+            "start": "2026-01-15T11:00:00+00:00",
+            "end": "2026-01-15T13:00:00+00:00",
+            "limit": 2,
+            "cursor": first["next_cursor"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "different history window" in response.json()["detail"]
+
+
 def test_history_bounds_are_inclusive(app: FastAPI, client: TestClient) -> None:
     repository = app.state.repository
     assert isinstance(repository, FakeRepository)

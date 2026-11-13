@@ -42,6 +42,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         token = request_id_ctx.set(request_id)
         started = time.perf_counter()
         status_code = 500
+        failed = False
 
         access_context = {
             "http_method": request.method,
@@ -55,6 +56,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             response.headers[self.header_name] = request_id
             return response
         except Exception:
+            failed = True
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             logger.exception(
                 "request failed",
@@ -75,13 +77,14 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             response.headers[self.header_name] = request_id
             return response
         finally:
-            duration_ms = round((time.perf_counter() - started) * 1000, 2)
-            logger.info(
-                "request completed",
-                extra={
-                    **access_context,
-                    "status_code": status_code,
-                    "duration_ms": duration_ms,
-                },
-            )
+            if not failed:
+                duration_ms = round((time.perf_counter() - started) * 1000, 2)
+                logger.info(
+                    "request completed",
+                    extra={
+                        **access_context,
+                        "status_code": status_code,
+                        "duration_ms": duration_ms,
+                    },
+                )
             request_id_ctx.reset(token)

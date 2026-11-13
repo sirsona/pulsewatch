@@ -6,8 +6,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 unit_path="${1:-$repo_root/deploy/systemd/pulsewatch.service}"
 
 if ! command -v systemd-analyze >/dev/null 2>&1; then
-  echo "systemd-analyze is not available; skipping unit verification" >&2
-  exit 0
+  echo "systemd-analyze is required for unit verification" >&2
+  exit 1
 fi
 
 tmpdir="$(mktemp -d)"
@@ -18,8 +18,8 @@ config_dir="$tmpdir/etc/pulsewatch"
 mkdir -p "$install_dir/.venv/bin" "$config_dir"
 
 printf '#!/bin/sh\nexit 0\n' >"$install_dir/.venv/bin/pulsewatch"
-printf '#!/bin/sh\nexit 0\n' >"$install_dir/.venv/bin/alembic"
-chmod +x "$install_dir/.venv/bin/pulsewatch" "$install_dir/.venv/bin/alembic"
+printf '#!/bin/sh\nexit 0\n' >"$install_dir/.venv/bin/pulsewatch-migrate"
+chmod +x "$install_dir/.venv/bin/pulsewatch" "$install_dir/.venv/bin/pulsewatch-migrate"
 printf 'PULSEWATCH_ENVIRONMENT=test\n' >"$config_dir/pulsewatch.env"
 chmod 0640 "$config_dir/pulsewatch.env"
 
@@ -29,4 +29,4 @@ sed \
   "$unit_path" >"$tmpdir/pulsewatch.service"
 
 systemd-analyze verify "$tmpdir/pulsewatch.service"
-echo "systemd unit verified: $unit_path"
+echo "systemd unit syntax verified: $unit_path"

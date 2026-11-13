@@ -96,6 +96,24 @@ async def test_retention_loop_starts_and_stops() -> None:
     assert service.is_running is False
 
 
+async def test_retention_loop_survives_database_failures() -> None:
+    repository = FakeRepository(healthy=False)
+    service = make_service(repository, interval_seconds=0.01)
+
+    service.start()
+    try:
+        for _ in range(100):
+            if repository.delete_calls:
+                break
+            await asyncio.sleep(0.01)
+        assert repository.delete_calls >= 1
+        assert service.is_running
+    finally:
+        await service.stop()
+
+    assert service.is_running is False
+
+
 def test_application_lifespan_starts_and_stops_retention(tmp_path: Path) -> None:
     repository = FakeRepository()
     repository.records = records()

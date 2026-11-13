@@ -40,6 +40,7 @@ def test_liveness_does_not_collect_metrics(app: FastAPI, client: TestClient) -> 
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+    assert "checks" not in response.json()
     assert collector.call_count == 0
 
 

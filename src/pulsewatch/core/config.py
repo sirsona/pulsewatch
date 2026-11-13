@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     request_id_header: str = "X-Request-ID"
     docs_enabled: bool = True
     database_url: SecretStr = SecretStr(_DEFAULT_DATABASE_URL)
+    migration_database_url: SecretStr | None = None
     sampler_enabled: bool = True
     sample_interval_seconds: float = Field(default=15.0, ge=1.0, le=3600.0)
     sampler_stale_after_seconds: float = Field(default=45.0, ge=1.0, le=86_400.0)
@@ -78,6 +79,15 @@ class Settings(BaseSettings):
         """Require the async SQLAlchemy driver used by the application."""
         if not value.get_secret_value().startswith("postgresql+asyncpg://"):
             msg = "database_url must use the postgresql+asyncpg driver"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("migration_database_url")
+    @classmethod
+    def validate_migration_database_url(cls, value: SecretStr | None) -> SecretStr | None:
+        """Optionally allow a dedicated DDL role for migrations."""
+        if value is not None and not value.get_secret_value().startswith("postgresql+asyncpg://"):
+            msg = "migration_database_url must use the postgresql+asyncpg driver"
             raise ValueError(msg)
         return value
 

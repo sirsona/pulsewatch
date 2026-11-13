@@ -12,13 +12,17 @@ run: migrate ## Apply migrations, then run the API locally with auto-reload
 	uv run pulsewatch --reload
 
 migrate: ## Apply PostgreSQL migrations
-	uv run alembic upgrade head
+	uv run pulsewatch-migrate
 
 test: ## Run the test suite
 	uv run pytest
 
 test-integration: ## Run tests that require PostgreSQL
-	uv run pytest -m integration
+	@test -n "$$PULSEWATCH_TEST_DATABASE_URL" || { \
+		echo "PULSEWATCH_TEST_DATABASE_URL is required for integration tests" >&2; \
+		exit 1; \
+	}
+	uv run pytest --no-cov -m integration
 
 lint: ## Check style and common defects
 	uv run ruff check .

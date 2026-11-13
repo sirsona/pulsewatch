@@ -16,8 +16,10 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
-    """Read the database URL from the application's validated settings."""
-    return get_settings().database_url.get_secret_value()
+    """Use the dedicated migration role when configured, else the app role."""
+    settings = get_settings()
+    configured = settings.migration_database_url or settings.database_url
+    return configured.get_secret_value()
 
 
 def run_migrations_offline() -> None:

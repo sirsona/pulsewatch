@@ -19,6 +19,7 @@ from pulsewatch.api.schemas import (
 )
 from pulsewatch.collectors.base import MetricsCollector
 from pulsewatch.core.config import Settings, get_settings
+from pulsewatch.db.errors import StorageUnavailableError
 from pulsewatch.db.repository import StoredSample
 from pulsewatch.main import create_app
 
@@ -130,7 +131,7 @@ class FakeRepository:
     def _check_healthy(self) -> None:
         if not self.healthy:
             msg = "simulated repository failure"
-            raise RuntimeError(msg)
+            raise StorageUnavailableError(msg)
 
     async def save_snapshot(self, snapshot: SystemSnapshot) -> None:
         self._check_healthy()

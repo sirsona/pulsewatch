@@ -19,7 +19,7 @@
 </p>
 
 > [!NOTE]
-> **Project status: `v0.2.0`.** PulseWatch samples host metrics on a fixed
+> **Project status: `v0.2.1`.** PulseWatch samples host metrics on a fixed
 > cadence, stores them in PostgreSQL, serves the latest sample and bounded
 > history, and removes expired data. See the [roadmap](#roadmap).
 
@@ -59,7 +59,7 @@ The service is intentionally built beyond the happy path:
 | Typed config, Ruff, mypy, pytest, coverage gate | ✅ Implemented |
 | PostgreSQL integration tests + full-stack CI | ✅ Implemented |
 | Multi-stage Docker image + Compose stack | ✅ Implemented |
-| Hardened systemd unit + static verification | ✅ Included and verified |
+| Hardened systemd unit + static verification | ✅ Included; live install untested |
 | Historical metrics endpoint | ✅ Implemented |
 | Batched retention cleanup | ✅ Implemented |
 
@@ -90,9 +90,10 @@ flowchart LR
     health --> api
 ```
 
-Only the sampler calls psutil. It runs immediately at startup and then on the
-configured interval, writing each snapshot through the repository. The current
-and history endpoints read stored samples rather than triggering another
+The sampler is the only component that collects metrics. It runs immediately at
+startup and then on the configured interval, writing each snapshot through the
+repository. The collector primes its CPU counters once during construction. The
+current and history endpoints read stored samples rather than triggering another
 collection. Retention deletes expired samples in bounded batches.
 
 Readiness checks PostgreSQL connectivity and sampler freshness. Liveness remains
@@ -148,8 +149,8 @@ cp .env.example .env
 make run
 ```
 
-`make run` applies Alembic migrations before starting the reload server. If you
-start the CLI directly, run `uv run alembic upgrade head` first.
+`make run` applies migrations before starting the reload server. If you start the
+CLI directly, run `uv run pulsewatch-migrate` first.
 
 The default configuration expects:
 
@@ -160,18 +161,19 @@ postgresql+asyncpg://pulsewatch:pulsewatch@127.0.0.1:5432/pulsewatch
 ### Run the quality gates
 
 ```bash
-make check        # Ruff + mypy + pytest with coverage
-make test         # pytest only
-make lint         # Ruff
-make typecheck    # mypy
-make verify-unit  # verify the systemd unit without installing it
-make migrate      # apply PostgreSQL migrations
+make check            # formatting, lint, types, tests, systemd verification
+make test             # pytest only
+make test-integration # PostgreSQL tests; requires PULSEWATCH_TEST_DATABASE_URL
+make lint             # Ruff
+make typecheck        # mypy
+make verify-unit      # static systemd unit verification
+make migrate          # apply migrations with pulsewatch-migrate
 ```
 
 The suite enforces **85% branch coverage**. CI runs on Python 3.12 and 3.13,
-runs the PostgreSQL integration tests, verifies the systemd unit, builds the
-image, and boots the complete Compose stack before checking readiness and a
-stored metric.
+runs the PostgreSQL integration tests, statically verifies the systemd unit,
+builds the image, and boots the complete Compose stack before checking readiness,
+current metrics, and history.
 
 To run the PostgreSQL integration test locally, apply migrations and provide a
 test database URL:
@@ -180,14 +182,29 @@ test database URL:
 export PULSEWATCH_DATABASE_URL=postgresql+asyncpg://pulsewatch:pulsewatch@127.0.0.1:5432/pulsewatch_test
 export PULSEWATCH_TEST_DATABASE_URL=$PULSEWATCH_DATABASE_URL
 
-uv run alembic upgrade head
-uv run pytest -m integration
+make migrate
+make test-integration
 ```
+
+### Migrations and packaging
+
+`pulsewatch-migrate` is the supported migration entrypoint. It is included in
+installed wheels, so migrations work without a repository checkout or an
+`alembic.ini` in the current directory:
+
+```bash
+uv run pulsewatch-migrate
+```
+
+Use `PULSEWATCH_MIGRATION_DATABASE_URL` to run migrations with a DDL role while
+the API uses a separate DML role. The source distribution includes the deployment,
+documentation, and migration assets; the wheel includes the migration scripts and
+the migration CLI.
 
 ## API
 
-All application endpoints are versioned under `/api/v1`; operational probes are
-intentionally unversioned.
+Application data endpoints are versioned under `/api/v1`; the root discovery
+endpoint and operational probes are unversioned.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -215,7 +232,9 @@ curl -G http://127.0.0.1:8000/api/v1/metrics/history \
 
 The default window is the last hour. Windows are inclusive, limited to seven
 days, and ordered newest first. The response includes `next_cursor`; pass it back
-as `cursor` for the next page. Malformed windows and cursors return `422`.
+as `cursor` for the next page. Omit `start`/`end` on the next request to reuse the
+cursor’s bound window, or pass the identical window explicitly. Mismatched
+windows and malformed cursors return `422`.
 
 ### Sample response
 
@@ -318,6 +337,7 @@ from a local `.env` file. Unknown variables are ignored.
 | `PULSEWATCH_REQUEST_ID_HEADER` | `X-Request-ID` | Correlation header name |
 | `PULSEWATCH_DOCS_ENABLED` | `true` | Disable `/docs` and `/openapi.json` in production |
 | `PULSEWATCH_DATABASE_URL` | local PostgreSQL URL | Must use `postgresql+asyncpg://`; treated as a secret |
+| `PULSEWATCH_MIGRATION_DATABASE_URL` | unset | Optional dedicated DDL role for migrations; defaults to `PULSEWATCH_DATABASE_URL` |
 | `PULSEWATCH_SAMPLER_ENABLED` | `true` | Set `false` only for API-only tests or maintenance |
 | `PULSEWATCH_SAMPLE_INTERVAL_SECONDS` | `15` | Minimum 1 second |
 | `PULSEWATCH_SAMPLER_STALE_AFTER_SECONDS` | `45` | Must be at least the sampling interval |
@@ -339,8 +359,10 @@ docker compose logs -f pulsewatch
 ```
 
 The Compose stack includes PostgreSQL with a persistent volume, runs
-`alembic upgrade head` before starting the API, and gives the app a readiness
-health check. The API runs as an unprivileged user with a read-only filesystem.
+`pulsewatch-migrate` before starting the API, and gives the app a readiness
+health check. It is a local demo stack: it uses the `development` environment
+and enables `/docs`. Set `PULSEWATCH_ENVIRONMENT=production` and disable docs for
+shared deployments. The API runs as an unprivileged user with a read-only filesystem.
 Database credentials in `compose.yaml` are development defaults; replace them and
 the corresponding `PULSEWATCH_DATABASE_URL` for any shared environment.
 
@@ -361,7 +383,7 @@ docker run --rm \
 Apply migrations before starting the container, or override the command:
 
 ```bash
-docker run ... pulsewatch:local sh -c 'alembic upgrade head && exec pulsewatch'
+docker run ... pulsewatch:local sh -c 'pulsewatch-migrate && exec pulsewatch'
 ```
 
 A container has its own disk and network namespaces, so its telemetry differs
@@ -373,13 +395,14 @@ for host monitoring.
 
 A hardened unit is provided at
 [deploy/systemd/pulsewatch.service](deploy/systemd/pulsewatch.service). It runs
-`alembic upgrade head` before the API, reads configuration from
+`pulsewatch-migrate` before the API, reads configuration from
 `/etc/pulsewatch/pulsewatch.env`, and applies sandboxing directives such as
 `ProtectSystem=strict`, `NoNewPrivileges`, and a system-call allow-list.
 
 Run `make verify-unit` to validate the unit against stubbed install paths without
-root. The full installation walkthrough, including PostgreSQL setup and migration
-verification, is in [docs/deployment.md](docs/deployment.md#systemd).
+root. The unit is statically verified; it is not installed or started by CI. The
+full installation walkthrough, including PostgreSQL setup, migration, and
+privilege separation, is in [docs/deployment.md](docs/deployment.md#systemd).
 
 ## Project structure
 
@@ -398,9 +421,10 @@ pulsewatch/
 │   ├── api/                    # Routes and Pydantic response models
 │   ├── collectors/             # psutil collector behind a protocol
 │   ├── core/                   # Config, logging, errors, middleware
-│   ├── db/                     # Engine, model, repository
+│   ├── db/                     # Engine, model, repository, typed errors
 │   ├── services/               # Background sampler and retention cleanup
 │   ├── __main__.py             # `pulsewatch` CLI
+│   ├── migrate.py              # packaged `pulsewatch-migrate` CLI
 │   └── main.py                 # Application factory and lifespan
 ├── scripts/                    # Systemd unit verification
 ├── tests/
@@ -428,6 +452,8 @@ pulsewatch/
 - [x] Historical metric query endpoint with time-range filters
 - [x] Retention policy and batched cleanup job
 - [x] Static systemd unit verification and local migration workflow
+- [x] Typed storage errors, cursor-window binding, and packaged migrations
+- [x] Integration-test command and failure-path coverage
 - [ ] Production runbook: reverse proxy, TLS, log shipping, backup/restore
 - [ ] Load tests and published performance characteristics
 
@@ -438,8 +464,12 @@ pulsewatch/
   sampling artifacts.
 - **Latest persisted sample.** `/current` reads from the repository instead of
   collecting on demand. It stays fast and consistent with stored history.
-- **Keyset history pagination.** Opaque cursors encode collection time and row
-  identity, avoiding large offsets and unstable pages.
+- **Keyset history pagination.** Opaque cursors encode collection time, row
+  identity, and the originating window, avoiding large offsets and unstable
+  pages.
+- **Typed failure boundaries.** Repositories translate expected database failures
+  into `StorageUnavailableError`; routes map only those to `503` and let bugs
+  become `500`s.
 - **Batched retention.** Expired rows are deleted in bounded batches to avoid
   long locks and unbounded transactions.
 - **Async storage, threaded collection.** SQLAlchemy and asyncpg are async; the
