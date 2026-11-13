@@ -139,3 +139,47 @@ async def test_delete_samples_before_cutoff(database: Database) -> None:
         limit=10,
     )
     assert [record.snapshot for record in remaining] == [snapshot]
+
+
+async def test_same_timestamp_orders_by_row_identity(database: Database) -> None:
+    repository = SqlAlchemyMetricRepository(database)
+    snapshot = build_snapshot()
+    first = snapshot.model_copy(update={"hostname": "first"})
+    second = snapshot.model_copy(update={"hostname": "second"})
+    await repository.save_snapshot(first)
+    await repository.save_snapshot(second)
+
+    page = await repository.list_snapshots(
+        start=snapshot.timestamp,
+        end=snapshot.timestamp,
+        limit=1,
+    )
+
+    assert page[0].snapshot.hostname == "second"
+    next_page = await repository.list_snapshots(
+        start=snapshot.timestamp,
+        end=snapshot.timestamp,
+        limit=1,
+        before=(page[0].snapshot.timestamp, page[0].id),
+    )
+    assert next_page[0].snapshot.hostname == "first"
+
+
+class TimeoutDatabase:
+    """A database double whose session factory raises a network timeout."""
+
+    def session_factory(self) -> None:
+        raise TimeoutError("simulated connection timeout")
+
+
+async def test_network_timeouts_are_translated_to_storage_errors() -> None:
+    from typing import cast
+
+    from pulsewatch.db.database import Database
+    from pulsewatch.db.errors import StorageUnavailableError
+    from pulsewatch.db.repository import SqlAlchemyMetricRepository
+
+    repository = SqlAlchemyMetricRepository(cast(Database, TimeoutDatabase()))
+
+    with pytest.raises(StorageUnavailableError):
+        await repository.latest_snapshot()

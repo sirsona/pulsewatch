@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pulsewatch"
-version = "0.2.0"
+version = "0.2.1"
 description = "A Linux-first system monitoring service with a versioned REST API."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -34,6 +34,7 @@ dependencies = [
 
 [project.scripts]
 pulsewatch = "pulsewatch.__main__:main"
+pulsewatch-migrate = "pulsewatch.migrate:main"
 
 [project.urls]
 Homepage = "https://github.com/sirsona/pulsewatch"
@@ -55,12 +56,27 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/pulsewatch"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "pulsewatch/migrations"
+
 [tool.hatch.build.targets.sdist]
+exclude = [
+  "/docs/agents",
+]
 include = [
   "/src",
   "/tests",
   "/migrations",
   "/alembic.ini",
+  "/deploy",
+  "/docker",
+  "/docs",
+  "/scripts",
+  "/compose.yaml",
+  "/CHANGELOG.md",
+  "/CONTRIBUTING.md",
+  "/SECURITY.md",
+  "/.env.example",
   "/README.md",
   "/LICENSE",
   "/pyproject.toml",

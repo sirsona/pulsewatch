@@ -60,7 +60,8 @@ flowchart TD
 | `pulsewatch.db` | Async engine, SQLAlchemy model, repository |
 | `pulsewatch.services.sampler` | Fixed-cadence collection loop |
 | `pulsewatch.services.retention` | Batched expired-sample cleanup |
-| `pulsewatch.api.cursors` | Opaque history pagination cursors |
+| `pulsewatch.api.cursors` | Window-bound history pagination cursors |
+| `pulsewatch.migrate` | Packaged migration entrypoint |
 | `migrations` | Alembic environment and schema versions |
 
 ## Startup and shutdown
@@ -81,7 +82,8 @@ scenario is primarily relevant to dependency loss after startup.
 
 ## Sampling lifecycle
 
-The sampler is the **only** caller of psutil:
+The sampler is the **only component that collects metrics**. The collector
+primes its CPU counters once during construction:
 
 ```text
 collector.collect() (worker thread)
@@ -140,17 +142,22 @@ tests. Production JSON is stored as `JSONB`; the model uses a JSON variant so th
 same repository logic can run against SQLite in tests.
 
 Alembic owns the schema. The application does not call `create_all()` at
-startup. Compose runs `alembic upgrade head` before starting the app; the systemd
-unit uses `ExecStartPre`. Local development should use `make run`, which applies
-migrations before starting the API.
+startup. Compose and the systemd unit run `pulsewatch-migrate` before starting the
+app. Local development should use `make run`, which applies migrations before
+starting the API.
+
+The wheel contains the Alembic scripts under `pulsewatch/migrations`, and the
+`pulsewatch-migrate` entrypoint locates them without requiring a working directory
+with `alembic.ini`. The sdist includes the deployment and documentation assets.
 
 ## History and retention
 
 `GET /api/v1/metrics/history` applies a bounded, inclusive UTC window (maximum
 seven days) and returns newest-first samples with cursor pagination. The cursor
-encodes the collection timestamp and row identity of the last item on the page;
-the next query uses a strict keyset condition, avoiding large offsets. Malformed
-or unsupported cursors are rejected with `422`.
+encodes the collection timestamp, row identity, and originating window. The next
+query uses a strict keyset condition, avoiding large offsets; omitting start/end
+reuses the bound window, while a mismatched explicit window is rejected.
+Malformed or unsupported cursors are rejected with `422`.
 
 `RetentionService` runs in the application lifespan. Every cleanup:
 
@@ -210,10 +217,12 @@ Three layers:
 
 1. Framework HTTP exceptions and request-validation errors are converted by
    registered handlers.
-2. The metrics endpoints map repository failures and an empty store to `503`
-   problem details; invalid history windows and cursors return `422`.
-3. Unexpected exceptions are caught by the request middleware, logged with a
-   traceback, and replaced with a generic response.
+2. Repositories translate expected database failures into
+   `StorageUnavailableError`. The metrics and readiness routes map only that
+   typed failure to `503`; invalid history windows and cursors return `422`.
+3. Unexpected exceptions are not swallowed by request handlers. They reach the
+   request middleware, are logged once with a traceback, and become a generic
+   `500` problem response.
 
 ## Testing strategy
 
@@ -227,9 +236,13 @@ Three layers:
 - PostgreSQL integration tests run against a migrated database when
   `PULSEWATCH_TEST_DATABASE_URL` is set; CI provides a PostgreSQL service.
 - The container CI job builds the image and starts the real Compose stack,
-  checking migration, readiness, and a stored sample.
+  checking migration, readiness, current metrics, and history.
+- CI installs the built wheel in a clean virtualenv and verifies that the
+  packaged migration entrypoint is available.
 - `scripts/verify-systemd-unit.sh` checks the unit against stubbed install paths
-  without requiring root.
+  without requiring root and fails if `systemd-analyze` is unavailable.
+- Wheel-install checks verify that packaged migration scripts are present and
+  usable without a repo checkout.
 
 ## Next design steps
 

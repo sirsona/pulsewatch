@@ -75,6 +75,29 @@ async def test_freshness_expires_after_the_configured_window() -> None:
     assert sampler.is_healthy(now=later) is False
 
 
+async def test_background_loop_survives_failed_writes() -> None:
+    repository = FailingSaveRepository()
+    sampler, collector = make_sampler(
+        repository,
+        interval_seconds=0.01,
+        stale_after_seconds=1,
+    )
+
+    sampler.start()
+    try:
+        for _ in range(100):
+            if collector.call_count:
+                break
+            await asyncio.sleep(0.01)
+        assert collector.call_count >= 1
+        assert sampler.last_success_at is None
+        assert sampler.is_running
+    finally:
+        await sampler.stop()
+
+    assert sampler.is_running is False
+
+
 async def test_start_and_stop_run_the_background_loop() -> None:
     repository = FakeRepository()
     sampler, _ = make_sampler(repository, interval_seconds=0.01, stale_after_seconds=1)

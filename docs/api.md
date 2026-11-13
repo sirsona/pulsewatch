@@ -12,10 +12,9 @@ interactive OpenAPI documentation is served at `/docs` and the raw schema at
 
 ## Versioning
 
-Application endpoints live under `/api/v1`. Breaking changes require a new path
-version. Operational probes intentionally sit outside the versioned API so
-orchestrators do not need to change their configuration when the API version
-advances.
+Application data endpoints live under `/api/v1`. The root discovery endpoint and
+operational probes intentionally sit outside the versioned API. Breaking changes
+to application data endpoints require a new path version.
 
 ## Request correlation
 
@@ -39,7 +38,7 @@ Returns service metadata for discovery and smoke tests.
 ```json
 {
   "name": "pulsewatch",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "environment": "development",
   "documentation": "/docs",
   "health": {
@@ -58,7 +57,7 @@ not inspect PostgreSQL, the sampler, or host metrics.
 {
   "status": "ok",
   "service": "pulsewatch",
-  "version": "0.2.0"
+  "version": "0.2.1"
 }
 ```
 
@@ -81,7 +80,7 @@ Ready response — HTTP `200`:
 {
   "status": "ok",
   "service": "pulsewatch",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "checks": {
     "database": "ok",
     "sampler": "ok"
@@ -95,7 +94,7 @@ Degraded responses — HTTP `503`:
 {
   "status": "degraded",
   "service": "pulsewatch",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "checks": {
     "database": "unavailable",
     "sampler": "stale"
@@ -169,7 +168,9 @@ Query parameters:
 | `cursor` | none | Opaque `next_cursor` from a previous page |
 
 The time window is inclusive, must have `start < end`, and cannot exceed **7
-days**. A cursor must be used with the same `start` and `end` window.
+days**. A cursor is bound to its originating window. If `start` and `end` are
+omitted while paginating, the cursor’s window is reused; explicitly supplied
+values must match it or the request returns `422`.
 
 ```bash
 curl -G http://127.0.0.1:8000/api/v1/metrics/history \
@@ -185,8 +186,8 @@ Response:
   "start": "2026-11-12T08:00:00Z",
   "end": "2026-11-12T09:00:00Z",
   "limit": 100,
-  "count": 2,
-  "next_cursor": "eyJ2IjoxLCJhdCI6IjIwMjYtMTEtMTJUMDg6NTk6NTArMDA6MDAiLCJpZCI6MTIzfQ",
+  "count": 0,
+  "next_cursor": null,
   "samples": []
 }
 ```
@@ -196,7 +197,7 @@ Response:
 - `next_cursor` is `null` when there are no more matching samples.
 - Pass `next_cursor` back as `cursor` to fetch the next page.
 - Cursors are deliberately opaque; do not parse or construct them.
-- Invalid windows and malformed cursors return `422` problem details.
+- Invalid or mismatched windows and malformed cursors return `422` problem details.
 - An unavailable metrics store returns `503` problem details.
 
 The cleanup task retains samples for `PULSEWATCH_RETENTION_DAYS`, so a history

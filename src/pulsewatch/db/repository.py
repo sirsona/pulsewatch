@@ -8,10 +8,14 @@ from typing import Any, Protocol, cast
 
 from sqlalchemy import and_, delete, or_, select, text
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import SQLAlchemyError
 
 from pulsewatch.api.schemas import SystemSnapshot
 from pulsewatch.db.database import Database
+from pulsewatch.db.errors import StorageUnavailableError
 from pulsewatch.db.models import MetricSample
+
+_STORAGE_ERRORS = (SQLAlchemyError, OSError, TimeoutError)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,7 +27,12 @@ class StoredSample:
 
 
 class MetricRepository(Protocol):
-    """Storage operations required by the API, sampler, and retention job."""
+    """Storage operations required by the API, sampler, and retention job.
+
+    Implementations raise :class:`StorageUnavailableError` for expected
+    connectivity or query failures. Other exceptions represent bugs and are
+    allowed to escape.
+    """
 
     async def save_snapshot(self, snapshot: SystemSnapshot) -> None:
         """Persist one snapshot."""
@@ -75,9 +84,12 @@ class SqlAlchemyMetricRepository:
             disk_usage_percent=snapshot.disk.usage_percent,
             payload=snapshot.model_dump(mode="json"),
         )
-        async with self._database.session_factory() as session:
-            session.add(record)
-            await session.commit()
+        try:
+            async with self._database.session_factory() as session:
+                session.add(record)
+                await session.commit()
+        except _STORAGE_ERRORS as exc:
+            raise StorageUnavailableError("could not persist metric sample") from exc
 
     async def latest_snapshot(self) -> SystemSnapshot | None:
         statement = (
@@ -85,8 +97,11 @@ class SqlAlchemyMetricRepository:
             .order_by(MetricSample.collected_at.desc(), MetricSample.id.desc())
             .limit(1)
         )
-        async with self._database.session_factory() as session:
-            record = (await session.execute(statement)).scalar_one_or_none()
+        try:
+            async with self._database.session_factory() as session:
+                record = (await session.execute(statement)).scalar_one_or_none()
+        except _STORAGE_ERRORS as exc:
+            raise StorageUnavailableError("could not read the latest metric sample") from exc
 
         if record is None:
             return None
@@ -122,8 +137,11 @@ class SqlAlchemyMetricRepository:
             .order_by(MetricSample.collected_at.desc(), MetricSample.id.desc())
             .limit(limit)
         )
-        async with self._database.session_factory() as session:
-            records = (await session.execute(statement)).scalars().all()
+        try:
+            async with self._database.session_factory() as session:
+                records = (await session.execute(statement)).scalars().all()
+        except _STORAGE_ERRORS as exc:
+            raise StorageUnavailableError("could not read metric history") from exc
 
         return [self._stored(record) for record in records]
 
@@ -136,12 +154,18 @@ class SqlAlchemyMetricRepository:
             .scalar_subquery()
         )
         statement = delete(MetricSample).where(MetricSample.id.in_(batch))
-        async with self._database.session_factory() as session:
-            result = cast(CursorResult[Any], await session.execute(statement))
-            await session.commit()
+        try:
+            async with self._database.session_factory() as session:
+                result = cast(CursorResult[Any], await session.execute(statement))
+                await session.commit()
+        except _STORAGE_ERRORS as exc:
+            raise StorageUnavailableError("could not delete expired metric samples") from exc
 
         return max(result.rowcount or 0, 0)
 
     async def check_connection(self) -> None:
-        async with self._database.engine.connect() as connection:
-            await connection.execute(text("SELECT 1"))
+        try:
+            async with self._database.engine.connect() as connection:
+                await connection.execute(text("SELECT 1"))
+        except _STORAGE_ERRORS as exc:
+            raise StorageUnavailableError("could not connect to the metric store") from exc

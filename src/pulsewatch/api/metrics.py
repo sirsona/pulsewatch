@@ -7,23 +7,35 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from pulsewatch.api.cursors import MAX_CURSOR_LENGTH, decode_cursor, encode_cursor
+from pulsewatch.api.cursors import (
+    MAX_CURSOR_LENGTH,
+    MAX_HISTORY_WINDOW,
+    CursorState,
+    HistoryWindow,
+    decode_cursor,
+    encode_cursor,
+)
 from pulsewatch.api.schemas import HistoryResponse, SystemSnapshot
 from pulsewatch.core.logging import logger
+from pulsewatch.db.errors import StorageUnavailableError
 from pulsewatch.db.repository import MetricRepository
 
 router = APIRouter(prefix="/metrics", tags=["Metrics"])
 
 _DEFAULT_HISTORY_WINDOW = timedelta(hours=1)
-_MAX_HISTORY_WINDOW = timedelta(days=7)
 _MAX_HISTORY_LIMIT = 1000
 
 
 def _normalise_history_window(
     start: datetime | None,
     end: datetime | None,
+    *,
+    cursor_window: HistoryWindow | None = None,
 ) -> tuple[datetime, datetime]:
     """Apply defaults and validate the requested UTC history window."""
+    if cursor_window is not None and start is None and end is None:
+        return cursor_window.start, cursor_window.end
+
     now = datetime.now(UTC)
     end_time = end or now
     start_time = start or (end_time - _DEFAULT_HISTORY_WINDOW)
@@ -41,10 +53,17 @@ def _normalise_history_window(
             status_code=422,
             detail="start must be earlier than end.",
         )
-    if end_utc - start_utc > _MAX_HISTORY_WINDOW:
+    if end_utc - start_utc > MAX_HISTORY_WINDOW:
         raise HTTPException(
             status_code=422,
             detail="The history window cannot exceed 7 days.",
+        )
+    if cursor_window is not None and (
+        start_utc != cursor_window.start or end_utc != cursor_window.end
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="The cursor belongs to a different history window.",
         )
     return start_utc, end_utc
 
@@ -84,14 +103,21 @@ async def history_metrics(
     ] = None,
 ) -> HistoryResponse:
     """Return newest-first samples within an inclusive, bounded time range."""
-    start_utc, end_utc = _normalise_history_window(start, end)
-
-    before: tuple[datetime, int] | None = None
+    cursor_state: CursorState | None = None
     if cursor is not None:
         try:
-            before = decode_cursor(cursor)
+            cursor_state = decode_cursor(cursor)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    start_utc, end_utc = _normalise_history_window(
+        start,
+        end,
+        cursor_window=cursor_state.window if cursor_state is not None else None,
+    )
+    before = (
+        (cursor_state.collected_at, cursor_state.sample_id) if cursor_state is not None else None
+    )
 
     repository: MetricRepository = request.app.state.repository
     try:
@@ -101,7 +127,7 @@ async def history_metrics(
             limit=limit + 1,
             before=before,
         )
-    except Exception as exc:
+    except StorageUnavailableError as exc:
         logger.exception(
             "failed to read metric history",
             extra={"event": "history_read_failed"},
@@ -113,7 +139,11 @@ async def history_metrics(
 
     has_more = len(records) > limit
     page = records[:limit]
-    next_cursor = encode_cursor(page[-1]) if has_more and page else None
+    next_cursor = (
+        encode_cursor(page[-1], HistoryWindow(start=start_utc, end=end_utc))
+        if has_more and page
+        else None
+    )
 
     return HistoryResponse(
         start=start_utc,
@@ -145,7 +175,7 @@ async def current_metrics(request: Request) -> SystemSnapshot:
     repository: MetricRepository = request.app.state.repository
     try:
         snapshot = await repository.latest_snapshot()
-    except Exception as exc:
+    except StorageUnavailableError as exc:
         logger.exception(
             "failed to read the latest metric sample",
             extra={"event": "metrics_read_failed"},

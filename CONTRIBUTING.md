@@ -19,8 +19,8 @@ cp .env.example .env
 make run
 ```
 
-`make run` applies Alembic migrations before starting the reload server. If you
-invoke the CLI directly, run `uv run alembic upgrade head` first.
+`make run` applies migrations before starting the reload server. If you invoke
+the CLI directly, run `uv run pulsewatch-migrate` first.
 
 For an integration-test database:
 
@@ -28,8 +28,8 @@ For an integration-test database:
 createdb pulsewatch_test
 export PULSEWATCH_DATABASE_URL=postgresql+asyncpg://pulsewatch:pulsewatch@127.0.0.1:5432/pulsewatch_test
 export PULSEWATCH_TEST_DATABASE_URL=$PULSEWATCH_DATABASE_URL
-uv run alembic upgrade head
-uv run pytest -m integration
+uv run pulsewatch-migrate
+make test-integration
 ```
 
 Run the full quality gate before opening a pull request:

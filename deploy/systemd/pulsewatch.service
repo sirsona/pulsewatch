@@ -12,7 +12,7 @@ WorkingDirectory=/opt/pulsewatch
 EnvironmentFile=/etc/pulsewatch/pulsewatch.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStartPre=/opt/pulsewatch/.venv/bin/alembic upgrade head
+ExecStartPre=/opt/pulsewatch/.venv/bin/pulsewatch-migrate
 ExecStart=/opt/pulsewatch/.venv/bin/pulsewatch
 Restart=on-failure
 RestartSec=5s

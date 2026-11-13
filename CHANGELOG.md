@@ -11,6 +11,37 @@ All notable changes to this project are documented here. The format is based on
 - Production backup/restore automation and load testing.
 - Optional aggregate history endpoints for long time ranges.
 
+## [0.2.1] - 2026-11-13
+
+### Added
+
+- Packaged `pulsewatch-migrate` entrypoint that works from an installed wheel.
+- Optional `PULSEWATCH_MIGRATION_DATABASE_URL` for a dedicated DDL role.
+- Wheel and sdist now carry the migration and deployment assets needed to install
+  and operate the service.
+- Typed `StorageUnavailableError` translation at the repository boundary.
+- Cursor windows are encoded in history cursors and validated on reuse.
+- Same-timestamp ordering, background-loop failure, and packaged-migration tests.
+- CI wheel-install verification.
+
+### Fixed
+
+- `make test-integration` and the documented integration commands now bypass the
+  full-suite coverage gate and require an explicit test database URL.
+- Failed requests are logged once instead of emitting both `request failed` and
+  `request completed`.
+- Unexpected programming errors are no longer converted to storage `503`s.
+- Liveness responses now omit `checks` as documented.
+- Systemd verification fails when `systemd-analyze` is unavailable.
+- Corrected endpoint/versioning, psutil, cursor-window, and systemd-verification
+  claims in the documentation.
+- Compose now labels its local stack as `development` and documents the
+  production/docs override.
+
+### Changed
+
+- Version advanced to `0.2.1`.
+
 ## [0.2.0] - 2026-11-12
 
 ### Added
@@ -56,6 +87,7 @@ All notable changes to this project are documented here. The format is based on
 - Hardened systemd unit and deployment documentation.
 - README, API contract, architecture notes, contributing, and security policies.
 
-[Unreleased]: https://github.com/sirsona/pulsewatch/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/sirsona/pulsewatch/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/sirsona/pulsewatch/releases/tag/v0.2.1
 [0.2.0]: https://github.com/sirsona/pulsewatch/releases/tag/v0.2.0
 [0.1.0]: https://github.com/sirsona/pulsewatch/releases/tag/v0.1.0

@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
+import logging
+
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
+from pulsewatch.api.schemas import SystemSnapshot
 from tests.conftest import FakeRepository, StubCollector
 
 
 class EchoPayload(BaseModel):
     count: int
+
+
+class BuggyRepository(FakeRepository):
+    """Repository double that surfaces a programming error."""
+
+    async def latest_snapshot(self) -> SystemSnapshot | None:
+        msg = "programming bug"
+        raise RuntimeError(msg)
 
 
 def test_current_metrics_returns_latest_stored_sample(app: FastAPI, client: TestClient) -> None:
@@ -70,7 +82,11 @@ def test_current_metrics_returns_503_when_storage_fails(app: FastAPI, client: Te
     assert "simulated repository failure" not in payload["detail"]
 
 
-def test_unhandled_errors_are_contained_by_the_middleware(app: FastAPI, client: TestClient) -> None:
+def test_unhandled_errors_are_contained_by_the_middleware(
+    app: FastAPI, client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="pulsewatch")
+
     @app.get("/_test/boom")
     def boom() -> None:
         msg = "unhandled boom"
@@ -86,6 +102,22 @@ def test_unhandled_errors_are_contained_by_the_middleware(app: FastAPI, client: 
     assert payload["title"] == "Internal Server Error"
     assert payload["request_id"] == "boom-1"
     assert "unhandled boom" not in payload["detail"]
+
+    request_logs = [
+        record for record in caplog.records if getattr(record, "path", None) == "/_test/boom"
+    ]
+    assert [record.message for record in request_logs] == ["request failed"]
+    assert request_logs[0].levelno == logging.ERROR
+
+
+def test_unexpected_repository_errors_become_500_not_503(app: FastAPI, client: TestClient) -> None:
+    app.state.repository = BuggyRepository()
+
+    response = client.get("/api/v1/metrics/current")
+
+    assert response.status_code == 500
+    assert response.json()["code"] == "internal_server_error"
+    assert "programming bug" not in response.json()["detail"]
 
 
 def test_not_found_uses_problem_details(client: TestClient) -> None:
